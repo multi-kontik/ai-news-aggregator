@@ -6,7 +6,7 @@ Run with: uv run python scripts/run_ingestion.py
 from app.runner import run_ingestion
 
 if __name__ == "__main__":
-    result = run_ingestion(hours=24)
+    result = run_ingestion(hours=150)
 
     print(f"{len(result.videos)} video(s)")
     for video in result.videos:
