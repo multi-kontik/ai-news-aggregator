@@ -7,7 +7,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database.models import Base
-from app.database.repository import AnthropicArticleRepository, OpenAIArticleRepository, YouTubeVideoRepository
+from app.database.repository import (
+    AnthropicArticleRepository,
+    DigestRepository,
+    OpenAIArticleRepository,
+    YouTubeVideoRepository,
+)
 
 
 @pytest.fixture
@@ -80,6 +85,23 @@ def test_youtube_video_repository_lists_missing_transcript(session):
     missing = repo.list_missing("transcript")
 
     assert [video.video_id for video in missing] == ["no-transcript"]
+
+
+def test_youtube_video_repository_list_needing_transcript_excludes_confirmed_unavailable(session):
+    repo = YouTubeVideoRepository(session)
+    repo.create(
+        channel="c", video_id="untried", title="Untried", url="u1",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
+    )
+    repo.create(
+        channel="c", video_id="confirmed-unavailable", title="Confirmed unavailable", url="u2",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
+        transcript_unavailable=True,
+    )
+
+    needing = repo.list_needing_transcript()
+
+    assert [video.video_id for video in needing] == ["untried"]
 
 
 def test_youtube_video_repository_lists_since(session):
@@ -179,3 +201,84 @@ def test_anthropic_article_repository_creates_and_skips_duplicates_by_url(sessio
     stored = repo.list()
     assert len(stored) == 1
     assert stored[0].title == "Old title"
+
+
+def test_digest_repository_creates_a_digest_linked_to_a_youtube_video(session):
+    video = YouTubeVideoRepository(session).create(
+        channel="c", video_id="vid1", title="Video", url="https://youtube.com/watch?v=vid1",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript="the transcript",
+    )
+    session.flush()
+
+    digest = DigestRepository(session).create(
+        youtube_video_id=video.id,
+        url=video.url,
+        title="Digest title",
+        summary="Digest summary.",
+    )
+    session.flush()
+
+    assert digest.id is not None
+    assert digest.youtube_video_id == video.id
+    assert digest.openai_article_id is None
+    assert digest.anthropic_article_id is None
+
+
+def test_digest_repository_list_youtube_videos_without_digest(session):
+    videos = YouTubeVideoRepository(session)
+    digests = DigestRepository(session)
+
+    digested = videos.create(
+        channel="c", video_id="has-digest", title="Has digest", url="u1",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
+    )
+    videos.create(
+        channel="c", video_id="no-digest", title="No digest", url="u2",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
+    )
+    session.flush()
+    digests.create(youtube_video_id=digested.id, url=digested.url, title="t", summary="s")
+
+    pending = digests.list_youtube_videos_without_digest()
+
+    assert [video.video_id for video in pending] == ["no-digest"]
+
+
+def test_digest_repository_list_openai_articles_without_digest(session):
+    articles = OpenAIArticleRepository(session)
+    digests = DigestRepository(session)
+
+    digested = articles.create(
+        url="https://openai.com/index/has-digest", title="Has digest",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    articles.create(
+        url="https://openai.com/index/no-digest", title="No digest",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    session.flush()
+    digests.create(openai_article_id=digested.id, url=digested.url, title="t", summary="s")
+
+    pending = digests.list_openai_articles_without_digest()
+
+    assert [article.url for article in pending] == ["https://openai.com/index/no-digest"]
+
+
+def test_digest_repository_list_anthropic_articles_without_digest(session):
+    articles = AnthropicArticleRepository(session)
+    digests = DigestRepository(session)
+
+    digested = articles.create(
+        url="https://www.anthropic.com/news/has-digest", title="Has digest",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    articles.create(
+        url="https://www.anthropic.com/news/no-digest", title="No digest",
+        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    session.flush()
+    digests.create(anthropic_article_id=digested.id, url=digested.url, title="t", summary="s")
+
+    pending = digests.list_anthropic_articles_without_digest()
+
+    assert [article.url for article in pending] == ["https://www.anthropic.com/news/no-digest"]

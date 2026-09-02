@@ -6,7 +6,7 @@ from typing import Generic, TypeVar
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.database.models import AnthropicArticle, OpenAIArticle, YouTubeVideo
+from app.database.models import AnthropicArticle, Digest, OpenAIArticle, YouTubeVideo
 
 ModelT = TypeVar("ModelT")
 
@@ -58,6 +58,18 @@ class YouTubeVideoRepository(Repository[YouTubeVideo]):
     def __init__(self, session: Session):
         super().__init__(session, YouTubeVideo, unique_field="video_id")
 
+    def list_needing_transcript(self) -> list[YouTubeVideo]:
+        """Videos with no transcript yet that haven't already been confirmed unavailable.
+
+        Excludes videos marked `transcript_unavailable`, so a video without
+        captions doesn't get re-fetched (and re-fail) on every enrichment run.
+        """
+        stmt = select(YouTubeVideo).where(
+            YouTubeVideo.transcript.is_(None),
+            YouTubeVideo.transcript_unavailable.is_(False),
+        )
+        return list(self.session.scalars(stmt))
+
 
 class OpenAIArticleRepository(Repository[OpenAIArticle]):
     def __init__(self, session: Session):
@@ -67,3 +79,62 @@ class OpenAIArticleRepository(Repository[OpenAIArticle]):
 class AnthropicArticleRepository(Repository[AnthropicArticle]):
     def __init__(self, session: Session):
         super().__init__(session, AnthropicArticle, unique_field="url")
+
+
+class DigestRepository:
+    """Create/list digests, plus find source rows that don't have one yet.
+
+    Doesn't use the generic `Repository`, since a digest's uniqueness is one
+    of three possible FK columns rather than a single field.
+    """
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(
+        self,
+        *,
+        url: str,
+        title: str,
+        summary: str,
+        youtube_video_id: int | None = None,
+        openai_article_id: int | None = None,
+        anthropic_article_id: int | None = None,
+    ) -> Digest:
+        digest = Digest(
+            url=url,
+            title=title,
+            summary=summary,
+            youtube_video_id=youtube_video_id,
+            openai_article_id=openai_article_id,
+            anthropic_article_id=anthropic_article_id,
+        )
+        self.session.add(digest)
+        return digest
+
+    def list(self) -> list[Digest]:
+        return list(self.session.scalars(select(Digest).order_by(Digest.created_at.desc())))
+
+    def list_youtube_videos_without_digest(self) -> list[YouTubeVideo]:
+        stmt = (
+            select(YouTubeVideo)
+            .outerjoin(Digest, Digest.youtube_video_id == YouTubeVideo.id)
+            .where(Digest.id.is_(None))
+        )
+        return list(self.session.scalars(stmt))
+
+    def list_openai_articles_without_digest(self) -> list[OpenAIArticle]:
+        stmt = (
+            select(OpenAIArticle)
+            .outerjoin(Digest, Digest.openai_article_id == OpenAIArticle.id)
+            .where(Digest.id.is_(None))
+        )
+        return list(self.session.scalars(stmt))
+
+    def list_anthropic_articles_without_digest(self) -> list[AnthropicArticle]:
+        stmt = (
+            select(AnthropicArticle)
+            .outerjoin(Digest, Digest.anthropic_article_id == AnthropicArticle.id)
+            .where(Digest.id.is_(None))
+        )
+        return list(self.session.scalars(stmt))

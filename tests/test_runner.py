@@ -6,11 +6,17 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.agent.summarizer import DigestSummary
 from app.database.models import Base
-from app.database.repository import AnthropicArticleRepository, OpenAIArticleRepository, YouTubeVideoRepository
+from app.database.repository import (
+    AnthropicArticleRepository,
+    DigestRepository,
+    OpenAIArticleRepository,
+    YouTubeVideoRepository,
+)
 from app.ingestion.feeds import Article
 from app.ingestion.youtube import ChannelVideo
-from app.runner import run_enrichment, run_ingestion
+from app.runner import process_digest, run_enrichment, run_ingestion
 
 
 @pytest.fixture(autouse=True)
@@ -235,6 +241,35 @@ def test_run_enrichment_isolates_failures_per_row(mocker, test_session_local):
         assert videos == {"blocked": None, "works": "the transcript"}
 
 
+def test_run_enrichment_marks_unavailable_transcripts_so_they_are_not_retried(mocker, test_session_local):
+    with test_session_local() as session:
+        YouTubeVideoRepository(session).create(
+            channel="c", video_id="no-captions", title="No captions", url="u",
+            published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
+        )
+        session.commit()
+
+    client = mocker.MagicMock()
+    client.get_transcript.return_value = None
+    mocker.patch("app.runner.YouTubeClient", return_value=mocker.MagicMock(__enter__=lambda self: client, __exit__=lambda *a: None))
+    mocker.patch("app.runner.fetch_article_markdown", return_value="content")
+
+    result = run_enrichment()
+
+    assert result.videos_enriched == 1
+    assert result.errors == []
+
+    with test_session_local() as session:
+        video = YouTubeVideoRepository(session).list()[0]
+        assert video.transcript is None
+        assert video.transcript_unavailable is True
+
+    # a second run should not retry this video, since it's now marked unavailable
+    client.get_transcript.reset_mock()
+    run_enrichment()
+    client.get_transcript.assert_not_called()
+
+
 def test_run_enrichment_does_not_reprocess_already_enriched_rows(mocker, test_session_local):
     with test_session_local() as session:
         YouTubeVideoRepository(session).create(
@@ -251,3 +286,91 @@ def test_run_enrichment_does_not_reprocess_already_enriched_rows(mocker, test_se
 
     assert result.videos_enriched == 0
     client.get_transcript.assert_not_called()
+
+
+def _mock_agent(mocker, summary: DigestSummary):
+    agent = mocker.MagicMock()
+    agent.summarize.return_value = summary
+    mocker.patch("app.runner.SummarizerAgent", return_value=agent)
+    return agent
+
+
+def test_process_digest_creates_digests_for_everything_missing_one(mocker, test_session_local):
+    with test_session_local() as session:
+        YouTubeVideoRepository(session).create(
+            channel="c", video_id="vid1", title="Video", url="https://youtube.com/watch?v=vid1",
+            published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description="desc", transcript="the transcript",
+        )
+        OpenAIArticleRepository(session).create(
+            url="https://openai.com/index/example", title="OpenAI article",
+            published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), content="the content",
+        )
+        AnthropicArticleRepository(session).create(
+            url="https://anthropic.com/news/example", title="Anthropic article",
+            published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), content="the content",
+        )
+        session.commit()
+
+    summary = DigestSummary(title="Digest title", summary="A two to three sentence summary.")
+    _mock_agent(mocker, summary)
+
+    result = process_digest()
+
+    assert result.digests_created == 3
+    assert result.errors == []
+
+    with test_session_local() as session:
+        digests = DigestRepository(session).list()
+        assert len(digests) == 3
+        assert all(d.title == "Digest title" for d in digests)
+        sources = {(d.youtube_video_id is not None, d.openai_article_id is not None, d.anthropic_article_id is not None) for d in digests}
+        assert sources == {(True, False, False), (False, True, False), (False, False, True)}
+
+
+def test_process_digest_isolates_failures_per_item(mocker, test_session_local):
+    with test_session_local() as session:
+        OpenAIArticleRepository(session).create(
+            url="https://openai.com/index/broken", title="Broken",
+            published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        OpenAIArticleRepository(session).create(
+            url="https://openai.com/index/works", title="Works",
+            published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        session.commit()
+
+    agent = mocker.MagicMock()
+
+    def summarize(*, title, url, source, content):
+        if "broken" in url:
+            raise RuntimeError("model error")
+        return DigestSummary(title="Digest title", summary="A summary.")
+
+    agent.summarize.side_effect = summarize
+    mocker.patch("app.runner.SummarizerAgent", return_value=agent)
+
+    result = process_digest()
+
+    assert result.digests_created == 1
+    assert [(error.source, error.error) for error in result.errors] == [
+        ("digest-openai:https://openai.com/index/broken", "model error")
+    ]
+
+
+def test_process_digest_does_not_reprocess_already_digested_items(mocker, test_session_local):
+    with test_session_local() as session:
+        OpenAIArticleRepository(session).create(
+            url="https://openai.com/index/example", title="Article",
+            published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        session.commit()
+
+    summary = DigestSummary(title="Digest title", summary="A summary.")
+    agent = _mock_agent(mocker, summary)
+
+    process_digest()
+    agent.summarize.reset_mock()
+    result = process_digest()
+
+    assert result.digests_created == 0
+    agent.summarize.assert_not_called()

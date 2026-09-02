@@ -8,6 +8,7 @@ import httpx
 import pytest
 import respx
 from youtube_transcript_api import IpBlocked, TranscriptsDisabled
+from youtube_transcript_api.proxies import WebshareProxyConfig
 
 from app.ingestion.youtube import ChannelVideo, Transcript, YouTubeClient
 
@@ -150,3 +151,22 @@ class TestGetTranscript:
 
         with pytest.raises(IpBlocked):
             client.get_transcript("vid1")
+
+
+class TestProxyConfig:
+    def test_uses_no_proxy_when_credentials_are_unset(self, mocker):
+        mocker.patch("app.ingestion.youtube.settings.webshare_proxy_username", None)
+        mocker.patch("app.ingestion.youtube.settings.webshare_proxy_password", None)
+
+        with YouTubeClient() as client:
+            assert client._transcript_api._fetcher._proxy_config is None
+
+    def test_uses_a_webshare_proxy_when_credentials_are_set(self, mocker):
+        mocker.patch("app.ingestion.youtube.settings.webshare_proxy_username", "the-username")
+        mocker.patch("app.ingestion.youtube.settings.webshare_proxy_password", "the-password")
+
+        with YouTubeClient() as client:
+            proxy_config = client._transcript_api._fetcher._proxy_config
+            assert isinstance(proxy_config, WebshareProxyConfig)
+            assert proxy_config.proxy_username == "the-username"
+            assert proxy_config.proxy_password == "the-password"

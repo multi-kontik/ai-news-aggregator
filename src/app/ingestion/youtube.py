@@ -13,6 +13,9 @@ from youtube_transcript_api import (
     VideoUnavailable,
     YouTubeTranscriptApi,
 )
+from youtube_transcript_api.proxies import WebshareProxyConfig
+
+from app.config import settings
 
 FEED_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 _CHANNEL_ID_PATTERN = re.compile(r"^UC[\w-]{22}$")
@@ -41,7 +44,14 @@ class YouTubeClient:
 
     def __init__(self) -> None:
         self._http = httpx.Client(follow_redirects=True, headers={"User-Agent": _USER_AGENT}, timeout=10)
-        self._transcript_api = YouTubeTranscriptApi()
+
+        proxy_config = None
+        if settings.webshare_proxy_username and settings.webshare_proxy_password:
+            proxy_config = WebshareProxyConfig(
+                proxy_username=settings.webshare_proxy_username,
+                proxy_password=settings.webshare_proxy_password,
+            )
+        self._transcript_api = YouTubeTranscriptApi(proxy_config=proxy_config)
 
     def __enter__(self) -> YouTubeClient:
         return self
