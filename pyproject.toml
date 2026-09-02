@@ -1,0 +1,36 @@
+[project]
+name = "ai-news-aggregator"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "multi-kontik", email = "bayaraa.battsengel@mail.utoronto.ca" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "feedparser>=6.0.14",
+    "httpx>=0.28.1",
+    "openai>=2.53.0",
+    "psycopg[binary]>=3.3.4",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.2",
+    "resend>=2.35.0",
+    "sqlalchemy>=2.0.51",
+    "trafilatura>=2.2.0",
+    "typer>=0.27.1",
+    "youtube-transcript-api>=1.2.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "app"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-mock>=3.15.1",
+    "respx>=0.23.1",
+]
