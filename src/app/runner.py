@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel
@@ -16,6 +18,8 @@ from app.database.session import SessionLocal
 from app.ingestion import anthropic_news, openai_news
 from app.ingestion.feeds import Article, fetch_article_markdown
 from app.ingestion.youtube import ChannelVideo, YouTubeClient
+
+logger = logging.getLogger(__name__)
 
 
 class IngestionError(BaseModel):
@@ -164,33 +168,51 @@ def process_digest() -> DigestResult:
         digests = DigestRepository(session)
         agent = SummarizerAgent()
 
-        for video in digests.list_youtube_videos_without_digest():
+        videos = digests.list_youtube_videos_without_digest()
+        openai_articles = digests.list_openai_articles_without_digest()
+        anthropic_articles = digests.list_anthropic_articles_without_digest()
+        logger.info(
+            "Digest: %d item(s) need a summary (%d YouTube, %d OpenAI, %d Anthropic)",
+            len(videos) + len(openai_articles) + len(anthropic_articles),
+            len(videos), len(openai_articles), len(anthropic_articles),
+        )
+
+        for i, video in enumerate(videos, start=1):
+            logger.info("[YouTube %d/%d] Summarizing %r (%s)", i, len(videos), video.title, video.url)
+            started = time.perf_counter()
             try:
                 content = video.transcript or video.description or video.title
+                content_kind = "transcript" if video.transcript else "description" if video.description else "title only"
+                logger.debug("[YouTube %d/%d] Using %s (%d chars)", i, len(videos), content_kind, len(content))
                 result = agent.summarize(title=video.title, url=video.url, source="YouTube", content=content)
                 digests.create(youtube_video_id=video.id, url=video.url, title=result.title, summary=result.summary)
                 digests_created += 1
+                logger.info("[YouTube %d/%d] Done in %.1fs -> %r", i, len(videos), time.perf_counter() - started, result.title)
             except Exception as e:
+                logger.exception("[YouTube %d/%d] Failed to summarize %s", i, len(videos), video.url)
                 errors.append(IngestionError(source=f"digest-youtube:{video.video_id}", error=str(e)))
 
-        for article in digests.list_openai_articles_without_digest():
-            try:
-                content = article.content or article.summary or article.title
-                result = agent.summarize(title=article.title, url=article.url, source="OpenAI", content=content)
-                digests.create(openai_article_id=article.id, url=article.url, title=result.title, summary=result.summary)
-                digests_created += 1
-            except Exception as e:
-                errors.append(IngestionError(source=f"digest-openai:{article.url}", error=str(e)))
-
-        for article in digests.list_anthropic_articles_without_digest():
-            try:
-                content = article.content or article.summary or article.title
-                result = agent.summarize(title=article.title, url=article.url, source="Anthropic", content=content)
-                digests.create(anthropic_article_id=article.id, url=article.url, title=result.title, summary=result.summary)
-                digests_created += 1
-            except Exception as e:
-                errors.append(IngestionError(source=f"digest-anthropic:{article.url}", error=str(e)))
+        for source_name, error_prefix, link_field, items in [
+            ("OpenAI", "digest-openai", "openai_article_id", openai_articles),
+            ("Anthropic", "digest-anthropic", "anthropic_article_id", anthropic_articles),
+        ]:
+            for i, article in enumerate(items, start=1):
+                logger.info("[%s %d/%d] Summarizing %r (%s)", source_name, i, len(items), article.title, article.url)
+                started = time.perf_counter()
+                try:
+                    content = article.content or article.summary or article.title
+                    result = agent.summarize(title=article.title, url=article.url, source=source_name, content=content)
+                    digests.create(**{link_field: article.id}, url=article.url, title=result.title, summary=result.summary)
+                    digests_created += 1
+                    logger.info(
+                        "[%s %d/%d] Done in %.1fs -> %r",
+                        source_name, i, len(items), time.perf_counter() - started, result.title,
+                    )
+                except Exception as e:
+                    logger.exception("[%s %d/%d] Failed to summarize %s", source_name, i, len(items), article.url)
+                    errors.append(IngestionError(source=f"{error_prefix}:{article.url}", error=str(e)))
 
         session.commit()
 
+    logger.info("Digest: finished, %d created, %d error(s)", digests_created, len(errors))
     return DigestResult(digests_created=digests_created, errors=errors)
