@@ -374,3 +374,36 @@ def test_process_digest_does_not_reprocess_already_digested_items(mocker, test_s
 
     assert result.digests_created == 0
     agent.summarize.assert_not_called()
+
+
+def test_process_digest_logs_which_item_it_is_processing(mocker, test_session_local, caplog):
+    with test_session_local() as session:
+        YouTubeVideoRepository(session).create(
+            channel="c", video_id="vid1", title="My Video", url="https://youtube.com/watch?v=vid1",
+            published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), transcript="the transcript",
+        )
+        YouTubeVideoRepository(session).create(
+            channel="c", video_id="vid2", title="Broken Video", url="https://youtube.com/watch?v=vid2",
+            published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), transcript="the transcript",
+        )
+        session.commit()
+
+    agent = mocker.MagicMock()
+
+    def summarize(*, title, url, source, content):
+        if "vid2" in url:
+            raise RuntimeError("model error")
+        return DigestSummary(title="Digest title", summary="A summary.")
+
+    agent.summarize.side_effect = summarize
+    mocker.patch("app.runner.SummarizerAgent", return_value=agent)
+
+    with caplog.at_level("INFO", logger="app.runner"):
+        process_digest()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Digest: 2 item(s) need a summary (2 YouTube, 0 OpenAI, 0 Anthropic)" in messages
+    assert "[YouTube 1/2] Summarizing 'My Video' (https://youtube.com/watch?v=vid1)" in messages
+    assert "[YouTube 2/2] Summarizing 'Broken Video' (https://youtube.com/watch?v=vid2)" in messages
+    assert "[YouTube 2/2] Failed to summarize https://youtube.com/watch?v=vid2" in messages
+    assert "Digest: finished, 1 created, 1 error(s)" in messages
