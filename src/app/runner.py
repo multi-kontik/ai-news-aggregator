@@ -157,6 +157,10 @@ def process_digest() -> DigestResult:
 
     Each item is summarized independently: one failed summary (e.g. a bad
     model response) doesn't stop the rest, it's just reported in `errors`.
+    Each digest is committed as soon as it's created, so finished summaries
+    show up in the table immediately and survive a crash or interrupt later
+    in the run (only the in-flight item is lost).
+
     Falls back to whatever text is available (title/summary/description) when
     an item hasn't been through stage-2 enrichment yet, so this stage doesn't
     require enrichment to have succeeded first.
@@ -186,9 +190,11 @@ def process_digest() -> DigestResult:
                 logger.debug("[YouTube %d/%d] Using %s (%d chars)", i, len(videos), content_kind, len(content))
                 result = agent.summarize(title=video.title, url=video.url, source="YouTube", content=content)
                 digests.create(youtube_video_id=video.id, url=video.url, title=result.title, summary=result.summary)
+                session.commit()
                 digests_created += 1
                 logger.info("[YouTube %d/%d] Done in %.1fs -> %r", i, len(videos), time.perf_counter() - started, result.title)
             except Exception as e:
+                session.rollback()
                 logger.exception("[YouTube %d/%d] Failed to summarize %s", i, len(videos), video.url)
                 errors.append(IngestionError(source=f"digest-youtube:{video.video_id}", error=str(e)))
 
@@ -203,16 +209,16 @@ def process_digest() -> DigestResult:
                     content = article.content or article.summary or article.title
                     result = agent.summarize(title=article.title, url=article.url, source=source_name, content=content)
                     digests.create(**{link_field: article.id}, url=article.url, title=result.title, summary=result.summary)
+                    session.commit()
                     digests_created += 1
                     logger.info(
                         "[%s %d/%d] Done in %.1fs -> %r",
                         source_name, i, len(items), time.perf_counter() - started, result.title,
                     )
                 except Exception as e:
+                    session.rollback()
                     logger.exception("[%s %d/%d] Failed to summarize %s", source_name, i, len(items), article.url)
                     errors.append(IngestionError(source=f"{error_prefix}:{article.url}", error=str(e)))
-
-        session.commit()
 
     logger.info("Digest: finished, %d created, %d error(s)", digests_created, len(errors))
     return DigestResult(digests_created=digests_created, errors=errors)
