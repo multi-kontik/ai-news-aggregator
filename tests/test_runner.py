@@ -407,3 +407,60 @@ def test_process_digest_logs_which_item_it_is_processing(mocker, test_session_lo
     assert "[YouTube 2/2] Summarizing 'Broken Video' (https://youtube.com/watch?v=vid2)" in messages
     assert "[YouTube 2/2] Failed to summarize https://youtube.com/watch?v=vid2" in messages
     assert "Digest: finished, 1 created, 1 error(s)" in messages
+
+
+def test_process_digest_commits_each_digest_as_it_goes(mocker, test_session_local):
+    """A crash partway through must not lose digests already created earlier in the run."""
+    with test_session_local() as session:
+        for slug in ("first", "second", "third"):
+            OpenAIArticleRepository(session).create(
+                url=f"https://openai.com/index/{slug}", title=slug,
+                published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        session.commit()
+
+    agent = mocker.MagicMock()
+
+    def summarize(*, title, url, source, content):
+        if title == "second":
+            # e.g. Ctrl+C or the process being killed: not caught per-item
+            raise KeyboardInterrupt
+        return DigestSummary(title=f"Digest {title}", summary="A summary.")
+
+    agent.summarize.side_effect = summarize
+    mocker.patch("app.runner.SummarizerAgent", return_value=agent)
+
+    with pytest.raises(KeyboardInterrupt):
+        process_digest()
+
+    with test_session_local() as session:
+        assert [d.title for d in DigestRepository(session).list()] == ["Digest first"]
+
+
+def test_process_digest_continues_after_a_failed_save(mocker, test_session_local):
+    """A failed commit for one item is rolled back so later items can still be saved."""
+    with test_session_local() as session:
+        for slug in ("first", "second"):
+            OpenAIArticleRepository(session).create(
+                url=f"https://openai.com/index/{slug}", title=slug,
+                published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        session.commit()
+
+    _mock_agent(mocker, DigestSummary(title="Digest title", summary="A summary."))
+
+    original_create = DigestRepository.create
+
+    def create(self, **kwargs):
+        if kwargs["url"].endswith("/first"):
+            kwargs["title"] = None  # violates NOT NULL -> commit fails
+        return original_create(self, **kwargs)
+
+    mocker.patch.object(DigestRepository, "create", create)
+
+    result = process_digest()
+
+    assert result.digests_created == 1
+    assert [e.source for e in result.errors] == ["digest-openai:https://openai.com/index/first"]
+    with test_session_local() as session:
+        assert [d.url for d in DigestRepository(session).list()] == ["https://openai.com/index/second"]
