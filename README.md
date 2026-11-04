@@ -1,72 +1,163 @@
-The build is an AI news aggregator where I can take multiple sources. So, for example, YouTube channels, and I want, for example, blog posts from OpenAI and Anthropic, and I want to scrape those, put them into a database where we have some kind of structure, where we have sources, we have, let's call them, articles. And then what I wanna do is I want to run a daily digest where we're going to take all of the articles from within the time frame, and we're going to do an LLM summary around that. And then based on the user insights that we specify in some kind of, like, agent system prompt, we can generate a daily digest, which is going to be short snippets with a link to the original source. Now from the YouTube channels, I want to I want to be able to create a list of channels, and then we want to get the latest videos from those channels. I think we can use the YouTube RSS feed for that and from... for the blog post, we can just have URLs that we can scrape for that. Okay. So I want everything built in a Python back end. I want to use a PostgreSQL database. I want to use SQL Alchemy in order to define the database models and then to also create the tables. I want the project structure to be an app folder where all of the app logic is in, and then I also want a Docker folder where we first create a very minimal setup for the PostgreSQL database. And then that will probably be starting point. We want to make sure that later down the line, we can easily deploy the whole app to render and then also schedule it every twenty four hours to run the reports, get everything. And then when we've created the Daily Digest, I want to send an email to my personal inbox with this. that's that's what I have in mind. I think that would be pretty cool to build.
+# AI News Aggregator
 
-https://openai.com/news/
+A personal daily AI news digest. It collects new videos and posts from YouTube
+channels, the OpenAI news blog and Anthropic's news, research and engineering
+blogs. It summarizes each one with an LLM, ranks them against a reader profile,
+and emails the top 10 as a short digest with links to the originals.
 
-https://www.anthropic.com/engineering
+## How it works
 
-https://www.anthropic.com/research
+One run of the pipeline goes through five stages:
 
-## Running it
+1. **Ingest.** Fetch everything published in the last 48 hours and store what's new.
+   - YouTube channels come from the YouTube Data API.
+   - OpenAI's posts come from its RSS feed.
+   - Anthropic's posts come from community-maintained RSS feeds.
+2. **Enrich.** Add a transcript to each video, and the full text, as markdown, to each article.
+3. **Summarize.** The summarizer agent writes a clear headline and a 2–3
+   sentence summary for every item that doesn't have one yet.
+4. **Rank.** The editor agent scores each unsent story from 0 to 10 for
+   relevance to the reader profile, with a one-line reason.
+5. **Email.** The email agent writes a short introduction. The top 10 stories
+   are sent as an HTML email through Resend and recorded as sent.
 
-Everything runs through one command, `ai-news`. Copy `.env.example` to `.env`
-and fill in `OPENAI_API_KEY`, `RESEND_API_KEY` and `EMAIL_TO`, then start the
-database:
+Every stage is safe to re-run:
+- **Nothing is stored twice.** Items that are already stored are skipped.
+- **Nothing is emailed twice.** Once a story has been emailed, it's never sent again.
+- **One failure doesn't stop the run.** If one feed, transcript or summary
+  fails, it's logged, the run carries on, and it's retried next time.
+- **A whole-stage failure is flagged.** If a stage fails entirely, for example
+  because the database is down, the command exits with an error so a scheduler
+  can flag it.
+
+All three agents use the OpenAI Responses API with structured outputs, through
+`gpt-4.1-mini` by default.
+
+## Requirements
+
+- Python 3.13 and [uv](https://docs.astral.sh/uv/)
+- Docker, for the local Postgres database
+- API keys for:
+  - **OpenAI**, required. Every agent uses it.
+  - **Resend**, required to send the email.
+  - **YouTube Data API v3**, needed for YouTube videos.
+  - **Webshare**, optional locally. It's a rotating residential proxy for YouTube transcripts.
+
+## Setup
 
 ```bash
+uv sync
+cp .env.example .env        # then fill in your keys, see Configuration below
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-The daily pipeline is a single command. It fetches new videos and articles,
-stores them, fills in transcripts and article content, summarizes everything
-new, ranks the unsent stories against your profile in `src/app/profile.py`, and
-emails you the top 10:
+Tables are created automatically on the first run. To create them up front,
+run `uv run ai-news init-db`.
+
+## Configuration
+
+All settings are read from `.env`. The comments in `.env.example` explain each one.
+
+| Setting | Needed for | Notes |
+|---|---|---|
+| `DATABASE_URL` | Everything | Defaults to the local Docker database. Plain `postgresql://` URLs work too. |
+| `OPENAI_API_KEY` | Everything | |
+| `RESEND_API_KEY`, `EMAIL_TO` | Sending the email | Not needed for a dry run. |
+| `EMAIL_FROM` | Optional | Defaults to Resend's test sender, which only delivers to your Resend account's address. Set it to an address on a verified domain to send anywhere. |
+| `YOUTUBE_API_KEY` | YouTube videos | YouTube's public RSS feeds return 404s, so videos are listed through the Data API. |
+| `WEBSHARE_PROXY_USERNAME`, `WEBSHARE_PROXY_PASSWORD` | YouTube transcripts | Optional locally. YouTube blocks most server IPs, so a server needs them. Use a "Residential" plan. |
+| `WEBSHARE_PROXY_COUNTRIES` | Optional | Limits the proxy's IPs to some countries, e.g. `us,ca`. |
+
+### Creating a YouTube API key
+
+1. In the [Google Cloud console](https://console.cloud.google.com), create a project.
+2. Go to **APIs & Services**, then **Library**. Find **YouTube Data API v3** and enable it.
+3. Go to **APIs & Services**, then **Credentials**. Click **Create credentials** and choose **API key**.
+4. Edit the key, and under **API restrictions** limit it to the YouTube Data API v3.
+
+The free quota is 10,000 units a day. A daily run uses a handful of units.
+
+## Running it
 
 ```bash
-uv run python main.py           # the full daily run (same as: uv run ai-news run)
+uv run python main.py                                    # the full daily run
 uv run python main.py --dry-run --preview digest.html   # build the email without sending it
 ```
 
-Each stage can also be run on its own: `ingest`, `enrich`, `digest`, `rank`,
-`send` and `init-db`. Run `uv run ai-news --help` for the options.
+`main.py` is the same as `uv run ai-news run`. Useful options:
 
-Every stage is safe to re-run. Stored items are deduplicated, and a story is
-recorded once it has been emailed, so it never goes out twice. The command exits
-non-zero if a whole stage fails, so a scheduler can flag the run. Single items
-that fail, such as one feed or one summary, are logged and retried next run.
+- **`--dry-run`** builds the email without sending it, and doesn't mark stories as sent.
+- **`--preview FILE`** saves the email's HTML so you can open it in a browser.
+- **`--top N`** changes how many stories go in the email. The default is 10.
+- **`--ingest-hours` and `--digest-hours`** change the lookback windows. Both default to 48 hours.
+- **`-v`** shows debug logs.
 
-## Deploying to Render
+Each stage can also be run on its own:
 
-`render.yaml` sets up two things on Render: a cron job that builds
-`docker/Dockerfile` and runs `main.py` once a day, and a Postgres database for
-it. The cron job runs at 12:00 UTC, which is 7:00 in Toronto in winter and 8:00
-in summer, since Render schedules are UTC only. Change `schedule` in
-`render.yaml` to move it.
+```bash
+uv run ai-news ingest     # fetch and store new videos and articles
+uv run ai-news enrich     # add transcripts and full article text
+uv run ai-news digest     # summarize anything without a summary
+uv run ai-news rank       # show the ranking, without sending anything
+uv run ai-news send       # rank and email the top stories
+uv run ai-news --help     # every command and option
+```
 
-**Cost:** about $7 a month. The database is the smallest paid plan at $6, and
-the cron job is billed by the minute with a $1 monthly minimum. The free
-database plan isn't used, because Render deletes free databases after 30 days.
+## Customizing
 
-**1. Push the code to GitHub.** Render deploys from the repo's main branch.
+- **What you're interested in.** Edit `src/app/profile.py`. It holds your
+  name, used in the greeting, plus your background, your interests in priority
+  order, and the topics you care less about. The editor agent ranks against it.
+- **YouTube channels.** Edit `YOUTUBE_CHANNELS` in `src/app/config.py`. Use
+  channel handles like `@OpenAI`.
+- **Blog feeds.** They live in `src/app/ingestion/openai_news.py` and
+  `src/app/ingestion/anthropic_news.py`.
+- **The model.** It's `openai_model` in `src/app/config.py`. You can also set
+  `OPENAI_MODEL` in `.env`.
+- **The agents' instructions.** Each agent's system prompt is at the top of its
+  module in `src/app/agent/`.
 
-**2. Create the Blueprint.** In the Render dashboard, choose **New**, then
-**Blueprint**, connect your GitHub account, and pick this repo. Render reads
-`render.yaml` and shows the cron job and database it will create.
+## Project structure
 
-**3. Fill in the secrets** when Render asks for them: `OPENAI_API_KEY`,
-`RESEND_API_KEY`, `EMAIL_TO`, `YOUTUBE_API_KEY`, `WEBSHARE_PROXY_USERNAME` and
-`WEBSHARE_PROXY_PASSWORD`. `DATABASE_URL` is filled in from the database
-automatically. To send from your own domain, add `EMAIL_FROM` later under the
-cron job's **Environment** tab.
+```
+main.py                    entry point for the daily run
+src/app/
+  cli.py                   the ai-news command and its subcommands
+  pipeline.py              runs every stage in order
+  runner.py                the five stages
+  profile.py               the reader profile used for ranking
+  config.py                settings, read from .env
+  email_digest.py          email template and sending, through Resend
+  agent/                   summarizer, editor (ranking) and email agents
+  ingestion/               YouTube, RSS feeds and article-to-markdown conversion
+  database/                SQLAlchemy models, repositories and session
+docker/
+  docker-compose.yml       local Postgres for development
+  Dockerfile               image that runs the pipeline once
+render.yaml                Render cron job and database, for deploying later
+tests/                     pytest suite
+```
 
-**4. Apply it.** Render creates the database, builds the image, and schedules
-the job. Tables are created automatically on the first run.
+## Tests
 
-**5. Test it.** On the cron job's page, click **Trigger Run** to run it now,
-and watch the **Logs** tab. Each run's logs stay there afterwards.
+```bash
+uv run pytest
+```
 
-**Updating:** push to main. Render rebuilds the image automatically, and the
-next run uses the new code.
+The tests mock every outside service, including OpenAI, Resend, YouTube and
+the feeds. The database tests use an in-memory SQLite database, so neither
+Docker nor any API keys are needed.
 
-The database lives on Render, so it survives every deploy. If a run fails or is
-skipped, the next one picks up anything published in the previous 48 hours, and
-nothing that was already emailed is sent again.
+## Known limitations
+
+- **openai.com blocks some full-text fetches.** Many OpenAI article pages answer
+  automated requests with 403 Forbidden. Those posts are summarized from the
+  feed's short description instead.
+- **Some transcripts need a retry.** Even through Webshare, a request
+  occasionally hits Google's "unusual traffic" page. Those transcripts are
+  retried on the next run.
+
+## Deployment
+
+The app isn't deployed yet. `render.yaml` and `docker/Dockerfile` are ready for
+running it as a daily cron job on Render, with a Render Postgres database.
