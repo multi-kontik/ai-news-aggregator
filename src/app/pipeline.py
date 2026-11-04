@@ -16,11 +16,9 @@ from app.config import settings
 from app.database.session import create_tables
 from app.profile import USER_PROFILE, UserProfile
 from app.runner import (
-    DigestResult,
     EmailDigestResult,
-    EnrichmentResult,
-    IngestionResult,
     StageError,
+    StageResult,
     process_digest,
     run_email_digest,
     run_enrichment,
@@ -41,9 +39,9 @@ DEFAULT_DIGEST_HOURS = 48
 
 
 class PipelineResult(BaseModel):
-    ingestion: IngestionResult
-    enrichment: EnrichmentResult
-    digest: DigestResult
+    ingestion: StageResult
+    enrichment: StageResult
+    digest: StageResult
     email: EmailDigestResult
 
     @property
@@ -92,8 +90,8 @@ def run_pipeline(
     logger.info(
         "Pipeline: finished in %.0fs: %d new item(s), %d digest(s), %d stor(ies) emailed, %d error(s)",
         time.perf_counter() - started,
-        ingestion.new_rows,
-        digest.digests_created,
+        ingestion.count,
+        digest.count,
         len(email.stories) if email.message_id else 0,
         len(result.errors),
     )

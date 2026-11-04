@@ -6,9 +6,9 @@ from datetime import date
 import pytest
 
 from app.agent.editor import RankedDigest
-from app.agent.email_agent import EmailAgent, EmailIntroduction, greeting
+from app.agent.email_agent import EmailAgent, EmailIntroduction
 from app.config import settings
-from app.email_digest import render_digest_email, send_email
+from app.email_digest import greeting, render_digest_email, send_email
 from app.profile import UserProfile
 
 PROFILE = UserProfile(name="Aaron", background="Builds LLM agents.", interests=["agents"])

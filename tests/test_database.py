@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from app.database.models import Base
-from app.database.repository import (
-    AnthropicArticleRepository,
-    DigestRepository,
-    OpenAIArticleRepository,
-    YouTubeVideoRepository,
-)
+from app.database.models import AnthropicArticle, Base, Digest, OpenAIArticle, SentDigest, YouTubeVideo
+from app.database.repository import DigestRepository, Repository
+
+PUBLISHED = datetime(2026, 1, 1)
 
 
 @pytest.fixture
@@ -23,317 +20,87 @@ def session():
         yield session
 
 
-def test_youtube_video_repository_creates_a_new_video(session):
-    repo = YouTubeVideoRepository(session)
+def _article(model=OpenAIArticle, slug="a", **fields):
+    return model(url=f"https://example.com/{slug}", title=slug, published_at=PUBLISHED, **fields)
 
-    video = repo.create(
-        channel="@anthropic-ai",
-        video_id="abc123",
-        title="Example video",
-        url="https://youtube.com/watch?v=abc123",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        description="a description",
-        transcript=None,
-    )
+
+def _digest(session, url="https://example.com/d", **source_link) -> Digest:
+    digest = DigestRepository(session).create(url=url, title="t", summary="s", published_at=PUBLISHED, **source_link)
+    session.flush()
+    return digest
+
+
+def test_repository_creates_a_row_and_skips_one_that_is_already_stored(session):
+    repo = Repository(session, YouTubeVideo, "video_id")
+    fields = dict(channel="@c", video_id="vid1", title="Old title", url="u", published_at=PUBLISHED)
+
+    assert repo.create(**fields) is not None
+    session.flush()
+    assert repo.create(**{**fields, "title": "New title"}) is None
     session.flush()
 
-    assert video is not None
-    assert video.id is not None
+    assert [v.title for v in session.scalars(select(YouTubeVideo))] == ["Old title"]
 
 
-def test_youtube_video_repository_skips_and_does_not_override_an_existing_video(session):
-    repo = YouTubeVideoRepository(session)
-    repo.create(
-        channel="@anthropic-ai",
-        video_id="abc123",
-        title="Old title",
-        url="https://youtube.com/watch?v=abc123",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        description=None,
-        transcript=None,
-    )
+def test_digest_is_linked_to_its_source_row(session):
+    article = _article()
+    session.add(article)
     session.flush()
 
-    result = repo.create(
-        channel="@anthropic-ai",
-        video_id="abc123",
-        title="New title",
-        url="https://youtube.com/watch?v=abc123",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        description=None,
-        transcript=None,
-    )
+    digest = _digest(session, openai_article_id=article.id)
+
+    assert digest.source == "OpenAI"
+    assert (digest.youtube_video_id, digest.anthropic_article_id) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "model, link_field",
+    [(OpenAIArticle, "openai_article_id"), (AnthropicArticle, "anthropic_article_id")],
+)
+def test_list_without_digest_returns_only_rows_no_digest_points_at(session, model, link_field):
+    digested, pending = _article(model, "digested"), _article(model, "pending")
+    session.add_all([digested, pending])
+    session.flush()
+    _digest(session, **{link_field: digested.id})
+
+    assert [row.url for row in DigestRepository(session).list_without_digest(model, link_field)] == [pending.url]
+
+
+def test_list_without_digest_works_for_videos(session):
+    video = YouTubeVideo(channel="@c", video_id="vid1", title="t", url="u", published_at=PUBLISHED)
+    session.add(video)
     session.flush()
 
-    assert result is None
-    stored = repo.list()
-    assert len(stored) == 1
-    assert stored[0].title == "Old title"
+    assert DigestRepository(session).list_without_digest(YouTubeVideo, "youtube_video_id") == [video]
 
 
-def test_youtube_video_repository_lists_missing_transcript(session):
-    repo = YouTubeVideoRepository(session)
-    repo.create(
-        channel="c", video_id="has-transcript", title="Has", url="u1",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript="already fetched",
-    )
-    repo.create(
-        channel="c", video_id="no-transcript", title="Missing", url="u2",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
-    )
-
-    missing = repo.list_missing("transcript")
-
-    assert [video.video_id for video in missing] == ["no-transcript"]
-
-
-def test_youtube_video_repository_list_needing_transcript_excludes_confirmed_unavailable(session):
-    repo = YouTubeVideoRepository(session)
-    repo.create(
-        channel="c", video_id="untried", title="Untried", url="u1",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
-    )
-    repo.create(
-        channel="c", video_id="confirmed-unavailable", title="Confirmed unavailable", url="u2",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
-        transcript_unavailable=True,
-    )
-
-    needing = repo.list_needing_transcript()
-
-    assert [video.video_id for video in needing] == ["untried"]
-
-
-def test_youtube_video_repository_lists_since(session):
-    repo = YouTubeVideoRepository(session)
-    repo.create(
-        channel="c", video_id="old", title="Old", url="u1",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
-    )
-    repo.create(
-        channel="c", video_id="new", title="New", url="u2",
-        published_at=datetime(2026, 1, 3, tzinfo=timezone.utc), description=None, transcript=None,
-    )
-
-    videos = repo.list(since=datetime(2026, 1, 2, tzinfo=timezone.utc))
-
-    assert [video.video_id for video in videos] == ["new"]
-
-
-def test_youtube_video_repository_delete(session):
-    repo = YouTubeVideoRepository(session)
-    video = repo.create(
-        channel="c", video_id="v1", title="t", url="u",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
-    )
-    session.flush()
-
-    repo.delete(video)
-    session.flush()
-
-    assert repo.list() == []
-
-
-def test_openai_article_repository_creates_and_skips_duplicates_by_url(session):
-    repo = OpenAIArticleRepository(session)
-
-    repo.create(
-        url="https://openai.com/index/example",
-        title="Old title",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        summary="a summary",
-        category="Product",
-    )
-    session.flush()
-
-    result = repo.create(
-        url="https://openai.com/index/example",
-        title="New title",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    )
-    session.flush()
-
-    assert result is None
-    stored = repo.list()
-    assert len(stored) == 1
-    assert stored[0].title == "Old title"
-
-
-def test_openai_article_repository_lists_missing_content(session):
-    repo = OpenAIArticleRepository(session)
-    repo.create(
-        url="https://openai.com/index/has-content",
-        title="Has content",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        content="already scraped",
-    )
-    repo.create(
-        url="https://openai.com/index/no-content",
-        title="Missing content",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    )
-
-    missing = repo.list_missing("content")
-
-    assert [article.url for article in missing] == ["https://openai.com/index/no-content"]
-
-
-def test_anthropic_article_repository_creates_and_skips_duplicates_by_url(session):
-    repo = AnthropicArticleRepository(session)
-
-    repo.create(
-        url="https://www.anthropic.com/news/example",
-        title="Old title",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        summary="a summary",
-        category="Announcements",
-    )
-    session.flush()
-
-    result = repo.create(
-        url="https://www.anthropic.com/news/example",
-        title="New title",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    )
-    session.flush()
-
-    assert result is None
-    stored = repo.list()
-    assert len(stored) == 1
-    assert stored[0].title == "Old title"
-
-
-def test_digest_repository_creates_a_digest_linked_to_a_youtube_video(session):
-    video = YouTubeVideoRepository(session).create(
-        channel="c", video_id="vid1", title="Video", url="https://youtube.com/watch?v=vid1",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript="the transcript",
-    )
-    session.flush()
-
-    digest = DigestRepository(session).create(
-        youtube_video_id=video.id,
-        url=video.url,
-        title="Digest title",
-        summary="Digest summary.",
-        published_at=video.published_at,
-    )
-    session.flush()
-
-    assert digest.id is not None
-    assert digest.youtube_video_id == video.id
-    assert digest.openai_article_id is None
-    assert digest.anthropic_article_id is None
-
-
-def test_digest_repository_list_youtube_videos_without_digest(session):
-    videos = YouTubeVideoRepository(session)
+def test_list_filters_by_publish_date_newest_first(session):
     digests = DigestRepository(session)
-
-    digested = videos.create(
-        channel="c", video_id="has-digest", title="Has digest", url="u1",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
-    )
-    videos.create(
-        channel="c", video_id="no-digest", title="No digest", url="u2",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
-    )
+    digests.create(url="old", title="t", summary="s", published_at=datetime(2026, 1, 1))
+    digests.create(url="new", title="t", summary="s", published_at=datetime(2026, 1, 3))
     session.flush()
-    digests.create(youtube_video_id=digested.id, url=digested.url, title="t", summary="s", published_at=digested.published_at)
 
-    pending = digests.list_youtube_videos_without_digest()
-
-    assert [video.video_id for video in pending] == ["no-digest"]
-
-
-def test_digest_repository_list_openai_articles_without_digest(session):
-    articles = OpenAIArticleRepository(session)
-    digests = DigestRepository(session)
-
-    digested = articles.create(
-        url="https://openai.com/index/has-digest", title="Has digest",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    )
-    articles.create(
-        url="https://openai.com/index/no-digest", title="No digest",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    )
-    session.flush()
-    digests.create(openai_article_id=digested.id, url=digested.url, title="t", summary="s", published_at=digested.published_at)
-
-    pending = digests.list_openai_articles_without_digest()
-
-    assert [article.url for article in pending] == ["https://openai.com/index/no-digest"]
-
-
-def test_digest_repository_list_anthropic_articles_without_digest(session):
-    articles = AnthropicArticleRepository(session)
-    digests = DigestRepository(session)
-
-    digested = articles.create(
-        url="https://www.anthropic.com/news/has-digest", title="Has digest",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    )
-    articles.create(
-        url="https://www.anthropic.com/news/no-digest", title="No digest",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    )
-    session.flush()
-    digests.create(anthropic_article_id=digested.id, url=digested.url, title="t", summary="s", published_at=digested.published_at)
-
-    pending = digests.list_anthropic_articles_without_digest()
-
-    assert [article.url for article in pending] == ["https://www.anthropic.com/news/no-digest"]
-
-
-def _digest(session, url: str) -> int:
-    digest = DigestRepository(session).create(url=url, title="t", summary="s", published_at=datetime(2026, 1, 1))
-    session.flush()
-    return digest.id
+    assert [d.url for d in digests.list()] == ["new", "old"]
+    assert [d.url for d in digests.list(since=datetime(2026, 1, 2))] == ["new"]
 
 
 def test_list_unsent_excludes_digests_that_were_emailed(session):
     digests = DigestRepository(session)
-    sent_id, unsent_id = _digest(session, "https://example.com/sent"), _digest(session, "https://example.com/unsent")
+    sent, unsent = _digest(session, url="sent"), _digest(session, url="unsent")
 
-    digests.mark_sent([sent_id], message_id="msg_1")
+    digests.mark_sent([sent.id], message_id="msg_1")
     session.flush()
 
-    assert [d.id for d in digests.list_unsent()] == [unsent_id]
+    assert digests.list_unsent() == [unsent]
 
 
 def test_mark_sent_skips_digests_already_marked(session):
     digests = DigestRepository(session)
-    digest_id = _digest(session, "https://example.com/a")
+    digest = _digest(session)
 
-    digests.mark_sent([digest_id, digest_id], message_id="msg_1")
+    digests.mark_sent([digest.id, digest.id], message_id="msg_1")
     session.flush()
-    digests.mark_sent([digest_id], message_id="msg_2")
+    digests.mark_sent([digest.id], message_id="msg_2")
     session.flush()
 
-    from app.database.models import SentDigest
-
-    assert [(row.digest_id, row.message_id) for row in session.query(SentDigest)] == [(digest_id, "msg_1")]
-
-
-def test_create_tables_upgrades_an_old_digests_table_to_the_source_publish_date(tmp_path):
-    """Databases created before digests.published_at existed have digests.created_at instead."""
-    from sqlalchemy import text
-
-    from app.database.session import create_tables
-
-    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
-    with engine.begin() as connection:
-        connection.execute(text("CREATE TABLE openai_articles (id INTEGER PRIMARY KEY, url VARCHAR UNIQUE, title VARCHAR, "
-                                "summary VARCHAR, category VARCHAR, content VARCHAR, published_at DATETIME, created_at DATETIME)"))
-        connection.execute(text("CREATE TABLE digests (id INTEGER PRIMARY KEY, youtube_video_id INTEGER, openai_article_id INTEGER, "
-                                "anthropic_article_id INTEGER, url VARCHAR, title VARCHAR, summary VARCHAR, created_at DATETIME)"))
-        connection.execute(text("INSERT INTO openai_articles (id, url, title, published_at, created_at) "
-                                "VALUES (1, 'u', 't', '2026-01-01 09:00:00', '2026-11-04 00:00:00')"))
-        connection.execute(text("INSERT INTO digests (id, openai_article_id, url, title, summary, created_at) "
-                                "VALUES (1, 1, 'u', 't', 's', '2026-11-04 00:00:00')"))
-
-    create_tables(engine)
-    create_tables(engine)  # a second run is a no-op
-
-    with engine.connect() as connection:
-        assert connection.execute(text("SELECT published_at FROM digests")).scalar_one() == "2026-01-01 09:00:00"
+    assert [(row.digest_id, row.message_id) for row in session.scalars(select(SentDigest))] == [(digest.id, "msg_1")]

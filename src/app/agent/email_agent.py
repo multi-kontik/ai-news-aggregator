@@ -1,13 +1,11 @@
 """Writes the personal introduction at the top of the daily digest email.
 
-The greeting line ("Hey Aaron, this is your daily digest of AI news for ...")
-is built in code rather than by the model, so the name and date are always
-exactly right. The model only writes the short overview that follows it.
+The greeting line above it ("Hey Aaron, this is your daily digest...") is part
+of the template in `app.email_digest`, so the name and date are always exactly
+right. The model only writes the short overview that follows it.
 """
 
 from __future__ import annotations
-
-from datetime import date
 
 from pydantic import BaseModel, Field
 
@@ -35,15 +33,6 @@ _INSTRUCTIONS = (
 
 class EmailIntroduction(BaseModel):
     introduction: str = Field(description="2-3 sentence teaser of today's stories, shown after the greeting.")
-
-
-def greeting(name: str, day: date) -> str:
-    """The fixed first line of the email, e.g. 'Hey Aaron, this is your daily digest of AI news for November 3, 2026.'"""
-    return f"Hey {name}, this is your daily digest of AI news for {format_day(day)}."
-
-
-def format_day(day: date) -> str:
-    return f"{day:%B} {day.day}, {day.year}"
 
 
 class EmailAgent(StructuredAgent):
