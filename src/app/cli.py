@@ -38,7 +38,7 @@ def _configure_logging(verbose: Annotated[bool, typer.Option("--verbose", "-v", 
 @app.command()
 def run(
     ingest_hours: Annotated[int, typer.Option(help="Fetch items published in the last N hours.")] = 48,
-    digest_hours: Annotated[int, typer.Option(help="Email unsent digests created in the last N hours.")] = 24,
+    digest_hours: Annotated[int, typer.Option(help="Email unsent stories published in the last N hours.")] = 48,
     top: Top = 10,
     dry_run: DryRun = False,
     preview: Preview = None,
@@ -95,13 +95,13 @@ def digest() -> None:
 
 
 @app.command()
-def rank(hours: Annotated[int, typer.Option(help="Rank unsent digests created in the last N hours.")] = 24) -> None:
+def rank(hours: Annotated[int, typer.Option(help="Rank unsent stories published in the last N hours.")] = 48) -> None:
     """Stage 4: rank unsent digests against the user profile (read-only)."""
     from app.runner import run_ranking
 
     ranked = run_ranking(hours=hours).ranked
     if not ranked:
-        typer.echo(f"No unsent digests from the last {hours} hour(s) to rank.")
+        typer.echo(f"No unsent stories published in the last {hours} hour(s) to rank.")
     for item in ranked:
         typer.echo(f"\n#{item.rank}  [{item.relevance_score}/10]  {item.title}  ({item.source})")
         typer.echo(f"    {item.url}")
@@ -110,7 +110,7 @@ def rank(hours: Annotated[int, typer.Option(help="Rank unsent digests created in
 
 @app.command()
 def send(
-    hours: Annotated[int, typer.Option(help="Email unsent digests created in the last N hours.")] = 24,
+    hours: Annotated[int, typer.Option(help="Email unsent stories published in the last N hours.")] = 48,
     top: Top = 10,
     dry_run: DryRun = False,
     preview: Preview = None,

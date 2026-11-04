@@ -97,6 +97,7 @@ class DigestRepository:
         url: str,
         title: str,
         summary: str,
+        published_at: datetime,
         youtube_video_id: int | None = None,
         openai_article_id: int | None = None,
         anthropic_article_id: int | None = None,
@@ -105,6 +106,7 @@ class DigestRepository:
             url=url,
             title=title,
             summary=summary,
+            published_at=published_at,
             youtube_video_id=youtube_video_id,
             openai_article_id=openai_article_id,
             anthropic_article_id=anthropic_article_id,
@@ -113,22 +115,22 @@ class DigestRepository:
         return digest
 
     def list(self, since: datetime | None = None) -> list[Digest]:
-        """List digests newest first, optionally only those created at or after `since`."""
-        stmt = select(Digest).order_by(Digest.created_at.desc())
+        """List digests by publish date, newest first, optionally only those published at or after `since`."""
+        stmt = select(Digest).order_by(Digest.published_at.desc())
         if since is not None:
-            stmt = stmt.where(Digest.created_at >= since)
+            stmt = stmt.where(Digest.published_at >= since)
         return list(self.session.scalars(stmt))
 
     def list_unsent(self, since: datetime | None = None) -> list[Digest]:
-        """Digests that haven't gone out in an email yet, newest first, optionally only those created since `since`."""
+        """Digests that haven't gone out in an email yet, newest first, optionally only those published since `since`."""
         stmt = (
             select(Digest)
             .outerjoin(SentDigest, SentDigest.digest_id == Digest.id)
             .where(SentDigest.id.is_(None))
-            .order_by(Digest.created_at.desc())
+            .order_by(Digest.published_at.desc())
         )
         if since is not None:
-            stmt = stmt.where(Digest.created_at >= since)
+            stmt = stmt.where(Digest.published_at >= since)
         return list(self.session.scalars(stmt))
 
     def mark_sent(self, digest_ids: list[int], message_id: str | None) -> None:

@@ -63,7 +63,7 @@ class Digest(Base):
     url: Mapped[str]
     title: Mapped[str]
     summary: Mapped[str]
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    published_at: Mapped[datetime] = mapped_column(doc="When the source video/article was published, not when the digest was written.")
 
     @property
     def source(self) -> str:

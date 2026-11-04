@@ -469,12 +469,13 @@ def test_process_digest_continues_after_a_failed_save(mocker, test_session_local
         assert [d.url for d in DigestRepository(session).list()] == ["https://openai.com/index/second"]
 
 
-def _digest_row(session, *, created_at: datetime, title: str, **source_fk: int) -> None:
-    digest = DigestRepository(session).create(url=f"https://example.com/{title}", title=title, summary="s", **source_fk)
-    digest.created_at = created_at
+def _digest_row(session, *, published_at: datetime, title: str, **source_fk: int) -> None:
+    DigestRepository(session).create(
+        url=f"https://example.com/{title}", title=title, summary="s", published_at=published_at, **source_fk,
+    )
 
 
-def test_run_ranking_only_ranks_digests_from_the_last_n_hours(mocker, test_session_local):
+def test_run_ranking_only_ranks_stories_published_in_the_last_n_hours(mocker, test_session_local):
     now = datetime.now(timezone.utc)
     with test_session_local() as session:
         video = YouTubeVideoRepository(session).create(
@@ -483,8 +484,8 @@ def test_run_ranking_only_ranks_digests_from_the_last_n_hours(mocker, test_sessi
         )
         article = OpenAIArticleRepository(session).create(url="https://openai.com/index/a", title="A", published_at=now)
         session.flush()
-        _digest_row(session, created_at=now - timedelta(hours=1), title="recent", youtube_video_id=video.id)
-        _digest_row(session, created_at=now - timedelta(hours=30), title="old", openai_article_id=article.id)
+        _digest_row(session, published_at=now - timedelta(hours=1), title="recent", youtube_video_id=video.id)
+        _digest_row(session, published_at=now - timedelta(hours=30), title="old", openai_article_id=article.id)
         session.commit()
 
     agent = mocker.MagicMock()
@@ -551,7 +552,7 @@ def test_run_ranking_skips_digests_that_were_already_emailed(mocker, test_sessio
     now = datetime.now(timezone.utc)
     with test_session_local() as session:
         for title in ("sent", "unsent"):
-            _digest_row(session, created_at=now - timedelta(hours=1), title=title)
+            _digest_row(session, published_at=now - timedelta(hours=1), title=title)
         session.flush()
         sent = next(d for d in DigestRepository(session).list() if d.title == "sent")
         DigestRepository(session).mark_sent([sent.id], message_id="msg_old")
@@ -569,7 +570,7 @@ def test_run_ranking_skips_digests_that_were_already_emailed(mocker, test_sessio
 def test_run_email_digest_records_the_sent_stories_but_not_on_a_dry_run(mocker, test_session_local):
     with test_session_local() as session:
         for title in ("one", "two"):
-            _digest_row(session, created_at=datetime.now(timezone.utc), title=title)
+            _digest_row(session, published_at=datetime.now(timezone.utc), title=title)
         session.commit()
         ids = sorted(d.id for d in DigestRepository(session).list())
 
@@ -599,3 +600,21 @@ def test_run_ingestion_counts_only_new_rows(mocker):
 
     assert run_ingestion().new_rows == 2
     assert run_ingestion().new_rows == 0
+
+
+def test_process_digest_dates_each_digest_with_its_sources_publish_date(mocker, test_session_local):
+    published = datetime(2026, 3, 14, 9, 30)
+    with test_session_local() as session:
+        YouTubeVideoRepository(session).create(
+            channel="c", video_id="vid1", title="Video", url="https://youtube.com/watch?v=vid1",
+            published_at=published, description="desc", transcript=None,
+        )
+        OpenAIArticleRepository(session).create(url="https://openai.com/index/a", title="A", published_at=published)
+        session.commit()
+
+    _mock_agent(mocker, DigestSummary(title="Digest title", summary="A summary."))
+
+    process_digest()
+
+    with test_session_local() as session:
+        assert [d.published_at for d in DigestRepository(session).list()] == [published, published]

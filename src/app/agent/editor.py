@@ -61,7 +61,7 @@ class DigestCandidate(BaseModel):
     summary: str
     url: str
     source: str
-    created_at: datetime
+    published_at: datetime
 
 
 class DigestScore(BaseModel):
@@ -122,7 +122,7 @@ def _rank(digests: list[DigestCandidate], scores: list[DigestScore]) -> list[Ran
 
     Ids the model made up are dropped, a repeated id keeps its first score,
     and any digest the model skipped is kept but placed last with score 0.
-    Ties are broken by the newest digest first, then by id.
+    Ties are broken by the most recently published story first, then by id.
     """
     by_id = {d.id: d for d in digests}
     score_by_id: dict[int, DigestScore] = {}
@@ -140,7 +140,7 @@ def _rank(digests: list[DigestCandidate], scores: list[DigestScore]) -> list[Ran
 
     def sort_key(d: DigestCandidate) -> tuple[bool, int, float, int]:
         score = score_by_id.get(d.id)
-        return (score is None, -(score.relevance_score if score else 0), -d.created_at.timestamp(), d.id)
+        return (score is None, -(score.relevance_score if score else 0), -d.published_at.timestamp(), d.id)
 
     ranked: list[RankedDigest] = []
     for rank, digest in enumerate(sorted(digests, key=sort_key), start=1):

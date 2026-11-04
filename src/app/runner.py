@@ -3,7 +3,7 @@
 1. run_ingestion:   fetch recent videos/articles from every source and store new ones
 2. run_enrichment:  fill in transcripts (YouTube) and full markdown content (articles)
 3. process_digest:  write a title + short summary for every item without one
-4. run_ranking:     rank the not-yet-emailed digests against the user profile
+4. run_ranking:     rank the not-yet-emailed stories against the user profile
 5. run_email_digest: email the top stories and record them as sent
 
 Stages 1-3 isolate failures per item: one bad feed, transcript or model
@@ -213,6 +213,7 @@ class _DigestWork:
     link: dict[str, int]
     title: str
     url: str
+    published_at: datetime
     content: str
     content_kind: str
 
@@ -231,6 +232,7 @@ def _digest_work(digests: DigestRepository) -> list[_DigestWork]:
             link={"youtube_video_id": video.id},
             title=video.title,
             url=video.url,
+            published_at=video.published_at,
             content=video.transcript or video.description or video.title,
             content_kind="transcript" if video.transcript else "description" if video.description else "title only",
         )
@@ -247,6 +249,7 @@ def _digest_work(digests: DigestRepository) -> list[_DigestWork]:
                 link={link_field: article.id},
                 title=article.title,
                 url=article.url,
+                published_at=article.published_at,
                 content=article.content or article.summary or article.title,
                 content_kind="content" if article.content else "feed summary" if article.summary else "title only",
             )
@@ -280,7 +283,9 @@ def process_digest() -> DigestResult:
             started = time.perf_counter()
             try:
                 result = agent.summarize(title=item.title, url=item.url, source=item.source, content=item.content)
-                digests.create(**item.link, url=item.url, title=result.title, summary=result.summary)
+                digests.create(
+                    **item.link, url=item.url, title=result.title, summary=result.summary, published_at=item.published_at,
+                )
                 session.commit()
                 digests_created += 1
                 logger.info("%s Done in %.1fs -> %r", label, time.perf_counter() - started, result.title)
@@ -302,8 +307,8 @@ class RankingResult(BaseModel):
     ranked: list[RankedDigest]
 
 
-def run_ranking(hours: int = 24, profile: UserProfile = USER_PROFILE) -> RankingResult:
-    """Rank the not-yet-emailed digests created in the last `hours` by relevance to `profile`.
+def run_ranking(hours: int = 48, profile: UserProfile = USER_PROFILE) -> RankingResult:
+    """Rank the not-yet-emailed stories published in the last `hours` by relevance to `profile`.
 
     Digests that already went out in an email are excluded, so overlapping
     windows never resend a story. The editor ranks everything in one model
@@ -319,12 +324,12 @@ def run_ranking(hours: int = 24, profile: UserProfile = USER_PROFILE) -> Ranking
                 summary=digest.summary,
                 url=digest.url,
                 source=digest.source,
-                created_at=digest.created_at,
+                published_at=digest.published_at,
             )
             for digest in DigestRepository(session).list_unsent(since=since)
         ]
 
-    logger.info("Ranking: %d unsent digest(s) from the last %d hour(s)", len(candidates), hours)
+    logger.info("Ranking: %d unsent stor(ies) published in the last %d hour(s)", len(candidates), hours)
     ranked = EditorAgent().rank(digests=candidates, profile=profile)
     logger.info("Ranking: finished, %d ranked", len(ranked))
     return RankingResult(ranked=ranked)
@@ -345,15 +350,15 @@ def run_email_digest(
     ranked: list[RankedDigest] | None = None,
     *,
     top_n: int = 10,
-    hours: int = 24,
+    hours: int = 48,
     profile: UserProfile = USER_PROFILE,
     day: date | None = None,
     send: bool = True,
 ) -> EmailDigestResult:
     """Build the daily email from the editor's top `top_n` stories, send it, and record them as sent.
 
-    Pass the editor's output as `ranked`; if it's omitted, the last `hours`
-    of unsent digests are ranked first. With `send=False` the email is built
+    Pass the editor's output as `ranked`; if it's omitted, unsent stories
+    published in the last `hours` are ranked first. With `send=False` the email is built
     but not sent or recorded (useful for previewing). With no stories, nothing
     is built or sent.
     """
