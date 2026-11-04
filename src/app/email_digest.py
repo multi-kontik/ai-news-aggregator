@@ -14,8 +14,16 @@ import resend
 from pydantic import BaseModel
 
 from app.agent.editor import RankedDigest
-from app.agent.email_agent import format_day, greeting
 from app.config import settings
+
+
+def greeting(name: str, day: date) -> str:
+    """The email's first line, e.g. 'Hey Aaron, this is your daily digest of AI news for November 3, 2026.'"""
+    return f"Hey {name}, this is your daily digest of AI news for {format_day(day)}."
+
+
+def format_day(day: date) -> str:
+    return f"{day:%B} {day.day}, {day.year}"
 
 
 class DigestEmail(BaseModel):

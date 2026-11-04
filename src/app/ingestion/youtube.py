@@ -1,38 +1,32 @@
+"""YouTube channels as a source: uploads come from the YouTube Data API, transcripts from YouTube itself.
+
+YouTube's public RSS feeds return 404 for every channel, so listing uploads
+needs a Data API key (`YOUTUBE_API_KEY`). Transcripts don't use the API: they
+come from YouTube's own endpoints, which block most datacenter IPs, so they go
+through Webshare's rotating residential proxy when its credentials are set.
+"""
+
 from __future__ import annotations
 
 import logging
 import re
-import time
 from datetime import datetime
-from types import TracebackType
+from typing import Any
 
 import httpx
 from pydantic import BaseModel
-from youtube_transcript_api import (
-    NoTranscriptFound,
-    TranscriptsDisabled,
-    VideoUnavailable,
-    YouTubeTranscriptApi,
-)
+from sqlalchemy import ColumnElement
+from youtube_transcript_api import NoTranscriptFound, TranscriptsDisabled, VideoUnavailable, YouTubeTranscriptApi
 from youtube_transcript_api.proxies import WebshareProxyConfig
 
 from app.config import settings
-from app.ingestion.feeds import entry_published_at, parse_feed_content
+from app.database.models import YouTubeVideo
+from app.ingestion.base import Source
 
 logger = logging.getLogger(__name__)
 
-FEED_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 API_URL = "https://www.googleapis.com/youtube/v3"
 _CHANNEL_ID_PATTERN = re.compile(r"^UC[\w-]{22}$")
-_CANONICAL_CHANNEL_LINK_PATTERN = re.compile(
-    r'<link rel="canonical" href="https://www\.youtube\.com/channel/(UC[\w-]{22})"'
-)
-_USER_AGENT = "Mozilla/5.0"
-# Statuses YouTube answers with when it's rate-limiting or blocking an IP. Its
-# feed endpoint returns 404 or 500 for this, not just 429.
-_RETRY_STATUSES = {404, 429, 500, 502, 503}
-_ATTEMPTS = 3
-_RETRY_DELAY_SECONDS = 2.0
 
 
 def webshare_proxy_config() -> WebshareProxyConfig | None:
@@ -47,10 +41,6 @@ def webshare_proxy_config() -> WebshareProxyConfig | None:
     )
 
 
-class Transcript(BaseModel):
-    text: str
-
-
 class ChannelVideo(BaseModel):
     video_id: str
     channel_id: str
@@ -58,61 +48,21 @@ class ChannelVideo(BaseModel):
     url: str
     published_at: datetime
     description: str
-    transcript: Transcript | None = None
 
 
 class YouTubeClient:
-    """Surface for resolving channels, fetching recent uploads, and pulling transcripts.
+    """Resolves channels and lists their uploads through the Data API, and fetches transcripts."""
 
-    With a YouTube Data API key, channels and their latest uploads come from
-    the official API. Without one, the channel page and public RSS feed are
-    used instead, which YouTube has been answering with 404s.
-
-    YouTube blocks most cloud/datacenter IPs and rate-limits busy ones. When
-    Webshare credentials are set, every request (channel pages, feeds and
-    transcripts) goes through Webshare's rotating residential proxy. Connections
-    aren't reused, so each request (and each retry) gets a fresh IP.
-    """
-
-    def __init__(self) -> None:
-        proxy_config = webshare_proxy_config()
-        self._http = httpx.Client(
-            follow_redirects=True,
-            headers={"User-Agent": _USER_AGENT},
-            timeout=20 if proxy_config else 10,
-            proxy=proxy_config.url if proxy_config else None,
-            limits=httpx.Limits(max_keepalive_connections=0) if proxy_config else httpx.Limits(),
-        )
-        self._transcript_api = YouTubeTranscriptApi(proxy_config=proxy_config)
-
-        # The Data API is Google's own and isn't IP-blocked, so it goes direct, not
-        # through the proxy. The key is sent as a header so it never shows up in a
-        # URL, a log line or an error message.
-        self._api = (
-            httpx.Client(base_url=API_URL, headers={"X-Goog-Api-Key": settings.youtube_api_key}, timeout=15)
-            if settings.youtube_api_key
-            else None
-        )
-
-    def __enter__(self) -> YouTubeClient:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        self.close()
+    def __init__(self, api_key: str) -> None:
+        # The key goes in a header, never the URL, so it can't leak into a log line or error message.
+        self._api = httpx.Client(base_url=API_URL, headers={"X-Goog-Api-Key": api_key}, timeout=15)
+        self._transcript_api = YouTubeTranscriptApi(proxy_config=webshare_proxy_config())
 
     def close(self) -> None:
-        self._http.close()
-        if self._api is not None:
-            self._api.close()
+        self._api.close()
 
-    def _api_get(self, endpoint: str, **params: str | int) -> dict:
-        """Call a YouTube Data API endpoint and return its JSON, raising with the API's own error message."""
-        assert self._api is not None
+    def _api_get(self, endpoint: str, **params: str | int) -> dict[str, Any]:
+        """Call a Data API endpoint and return its JSON, raising with the API's own error message."""
         response = self._api.get(f"/{endpoint}", params=params)
         if response.status_code != 200:
             try:
@@ -122,79 +72,23 @@ class YouTubeClient:
             raise RuntimeError(f"YouTube Data API {endpoint} failed with HTTP {response.status_code}: {message}")
         return response.json()
 
-    def _get(self, url: str) -> httpx.Response:
-        """GET `url`, retrying the statuses YouTube uses for rate limits and IP blocks. Returns the last response."""
-        for attempt in range(1, _ATTEMPTS):
-            response = self._http.get(url)
-            if response.status_code not in _RETRY_STATUSES:
-                return response
-            logger.info("YouTube returned HTTP %d for %s, retrying (%d/%d)", response.status_code, url, attempt, _ATTEMPTS - 1)
-            time.sleep(_RETRY_DELAY_SECONDS * attempt)
-        return self._http.get(url)
-
     def resolve_channel_id(self, channel: str) -> str:
-        """Resolve a channel handle/URL/id to its canonical UC... channel id.
-
-        Accepts a raw channel id (UC...), a handle ("@name"), or a full channel
-        URL. YouTube's RSS feed only accepts the UC id, not handles or custom
-        URLs, so anything else is resolved by fetching the channel page and
-        reading its canonical link.
-        """
+        """Turn a handle like "@OpenAI" into its UC... channel id. A channel id is returned as is."""
         channel = channel.strip()
         if _CHANNEL_ID_PATTERN.match(channel):
             return channel
-
-        if self._api is not None and channel.startswith("@"):
-            items = self._api_get("channels", part="id", forHandle=channel).get("items") or []
-            if not items:
-                raise ValueError(f"Could not resolve a channel id for {channel!r}")
-            return items[0]["id"]
-
-        url = channel if channel.startswith("http") else f"https://www.youtube.com/{channel.lstrip('/')}"
-        response = self._get(url)
-        response.raise_for_status()
-
-        match = _CANONICAL_CHANNEL_LINK_PATTERN.search(response.text)
-        if not match:
+        items = self._api_get("channels", part="id", forHandle=channel).get("items") or []
+        if not items:
             raise ValueError(f"Could not resolve a channel id for {channel!r}")
-        return match.group(1)
+        return items[0]["id"]
 
     def fetch_latest_videos(self, channel_id: str, since: datetime | None = None) -> list[ChannelVideo]:
-        """Fetch videos from a channel's RSS feed, optionally filtered to those published after `since`.
+        """A channel's 50 most recent uploads, newest first, optionally only those published since `since`.
 
-        Uses the Data API when a key is set, otherwise the RSS feed. Either way
-        only the most recent uploads are returned (50 via the API, ~15 via the
-        feed), which is plenty for a daily sync but not for fetching full history.
+        Uploads are read from the channel's uploads playlist, whose id is the
+        channel id with "UC" swapped for "UU". Private and deleted videos are skipped.
         """
-        if self._api is not None:
-            return self._fetch_latest_videos_from_api(channel_id, since)
-
-        feed_url = FEED_URL.format(channel_id=channel_id)
-        response = self._get(feed_url)
-        if response.status_code != 200:
-            raise RuntimeError(f"Fetching feed for channel {channel_id!r} failed with HTTP {response.status_code}")
-
-        videos = []
-        for entry in parse_feed_content(response.content, feed_url):
-            published_at = entry_published_at(entry)
-            if published_at is None or (since is not None and published_at < since):
-                continue
-            videos.append(
-                ChannelVideo(
-                    video_id=entry.yt_videoid,
-                    channel_id=channel_id,
-                    title=entry.title,
-                    url=entry.link,
-                    published_at=published_at,
-                    description=getattr(entry, "summary", None) or "",
-                )
-            )
-        return videos
-
-    def _fetch_latest_videos_from_api(self, channel_id: str, since: datetime | None) -> list[ChannelVideo]:
-        """List a channel's uploads playlist (its id is the channel id with UC swapped for UU), newest first."""
-        uploads_playlist_id = "UU" + channel_id[2:]
-        data = self._api_get("playlistItems", part="snippet,contentDetails", playlistId=uploads_playlist_id, maxResults=50)
+        data = self._api_get("playlistItems", part="snippet,contentDetails", playlistId="UU" + channel_id[2:], maxResults=50)
 
         videos = []
         for item in data.get("items", []):
@@ -218,16 +112,87 @@ class YouTubeClient:
             )
         return videos
 
-    def get_transcript(self, video_id: str, languages: tuple[str, ...] = ("en",)) -> Transcript | None:
-        """Return a video's transcript, or None if unavailable.
+    def get_transcript(self, video_id: str, languages: tuple[str, ...] = ("en",)) -> str | None:
+        """A video's transcript text, or None if it has no captions.
 
-        Covers the common failure modes (captions disabled, no transcript in the
-        requested language, video unavailable) by returning None rather than
-        raising, since a missing transcript shouldn't block ingesting the video
-        itself.
+        "No captions" (disabled, none in the language, video unavailable)
+        returns None. Anything else, like an IP block, raises, so the caller
+        can retry it later instead of giving up on the video.
         """
         try:
             fetched = self._transcript_api.fetch(video_id, languages=list(languages))
         except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
             return None
-        return Transcript(text=" ".join(snippet.text for snippet in fetched))
+        return " ".join(snippet.text for snippet in fetched)
+
+
+class YouTubeSource(Source):
+    """A list of YouTube channels. Each channel is fetched (and can fail) on its own.
+
+    Videos are stored with their title and description, then enriched with
+    their transcript. A video with no captions is marked `transcript_unavailable`
+    so it isn't retried every run; a failed fetch (e.g. an IP block) is retried.
+    Without `YOUTUBE_API_KEY` there's no way to list uploads, so the source is
+    skipped with a warning.
+    """
+
+    name = "YouTube"
+    model = YouTubeVideo
+    unique_field = "video_id"
+    digest_link = "youtube_video_id"
+
+    def __init__(self, *, channels: list[str]) -> None:
+        self.channels = channels
+        self._client: YouTubeClient | None = None
+
+    def __enter__(self) -> YouTubeSource:
+        self._client = YouTubeClient(api_key=settings.youtube_api_key or "")
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    @property
+    def client(self) -> YouTubeClient:
+        if self._client is None:
+            raise RuntimeError("YouTubeSource must be used as a context manager")
+        return self._client
+
+    def units(self) -> list[str]:
+        if not settings.youtube_api_key:
+            logger.warning("YOUTUBE_API_KEY is not set, so YouTube channels are skipped")
+            return []
+        return self.channels
+
+    def fetch(self, unit: str, since: datetime) -> list[dict[str, Any]]:
+        videos = self.client.fetch_latest_videos(self.client.resolve_channel_id(unit), since=since)
+        return [
+            {
+                "channel": unit,
+                "video_id": video.video_id,
+                "title": video.title,
+                "url": video.url,
+                "published_at": video.published_at,
+                "description": video.description,
+            }
+            for video in videos
+        ]
+
+    def needs_enrichment(self) -> ColumnElement[bool]:
+        return YouTubeVideo.transcript.is_(None) & YouTubeVideo.transcript_unavailable.is_(False)
+
+    def enrich(self, row: YouTubeVideo) -> None:
+        transcript = self.client.get_transcript(row.video_id)
+        if transcript is None:
+            row.transcript_unavailable = True
+        else:
+            row.transcript = transcript
+
+    def digest_content(self, row: YouTubeVideo) -> tuple[str, str]:
+        if row.transcript:
+            return row.transcript, "transcript"
+        if row.description:
+            return row.description, "description"
+        return row.title, "title only"

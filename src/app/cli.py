@@ -65,12 +65,12 @@ def init_db() -> None:
 
 
 @app.command()
-def ingest(hours: Annotated[int, typer.Option(help="Fetch items published in the last N hours.")] = 24) -> None:
+def ingest(hours: Annotated[int, typer.Option(help="Fetch items published in the last N hours.")] = 48) -> None:
     """Stage 1: fetch recent videos and articles and store the new ones."""
     from app.runner import run_ingestion
 
     result = run_ingestion(hours=hours)
-    typer.echo(f"{len(result.videos)} video(s) and {len(result.articles)} article(s) fetched, {result.new_rows} new")
+    typer.echo(f"{result.count} new item(s) stored")
     _report_errors(result.errors)
 
 
@@ -80,7 +80,7 @@ def enrich() -> None:
     from app.runner import run_enrichment
 
     result = run_enrichment()
-    typer.echo(f"{result.videos_enriched} video(s) and {result.articles_enriched} article(s) enriched")
+    typer.echo(f"{result.count} item(s) enriched")
     _report_errors(result.errors)
 
 
@@ -90,7 +90,7 @@ def digest() -> None:
     from app.runner import process_digest
 
     result = process_digest()
-    typer.echo(f"{result.digests_created} digest(s) created")
+    typer.echo(f"{result.count} digest(s) created")
     _report_errors(result.errors)
 
 

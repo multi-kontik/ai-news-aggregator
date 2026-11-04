@@ -1,19 +1,13 @@
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-YOUTUBE_CHANNELS = [
-    "@anthropic-ai",
-    "@OpenAI",
-    "@matthew_berman"
-]
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://app:app@localhost:5432/ai_news_aggregator"
-    # YouTube Data API v3 key. Used to list each channel's latest uploads, since
-    # YouTube's public RSS feeds stopped working. Without it the feeds are tried.
+    # YouTube Data API v3 key, used to list each channel's latest uploads.
+    # Without it, YouTube is skipped (its public RSS feeds return 404).
     youtube_api_key: str | None = None
     webshare_proxy_username: str | None = None
     webshare_proxy_password: str | None = None
