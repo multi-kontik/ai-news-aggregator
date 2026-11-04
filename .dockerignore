@@ -1,0 +1,12 @@
+# Keep secrets, local environments and caches out of the image.
+.env
+.env.*
+!.env.example
+.venv
+.git
+.claude
+**/__pycache__
+**/*.py[oc]
+.pytest_cache
+tests
+*.code-workspace

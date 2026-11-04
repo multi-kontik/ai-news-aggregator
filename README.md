@@ -22,8 +22,8 @@ new, ranks the unsent stories against your profile in `src/app/profile.py`, and
 emails you the top 10:
 
 ```bash
-uv run ai-news run              # the full daily run
-uv run ai-news run --dry-run --preview digest.html   # build the email without sending it
+uv run python main.py           # the full daily run (same as: uv run ai-news run)
+uv run python main.py --dry-run --preview digest.html   # build the email without sending it
 ```
 
 Each stage can also be run on its own: `ingest`, `enrich`, `digest`, `rank`,
@@ -34,15 +34,60 @@ recorded once it has been emailed, so it never goes out twice. The command exits
 non-zero if a whole stage fails, so a scheduler can flag the run. Single items
 that fail, such as one feed or one summary, are logged and retried next run.
 
-## Scheduling it daily
+## Deploying to a server
 
-Run `ai-news run` once a day from the project folder. With cron, for 7am every day:
+The server runs two containers with Docker Compose: Postgres, and the app. The
+app container runs `main.py` every day at 7:00 Toronto time, following daylight
+saving, and stays idle in between. The schedule is in `docker/crontab`, and the
+image is built from `docker/Dockerfile`.
 
-```cron
-0 7 * * * cd /path/to/ai-news-aggregator && /path/to/uv run ai-news run >> pipeline.log 2>&1
+**1. Create a server.** Any Ubuntu 24.04 VPS with 4 GB of RAM works, such as a
+Hetzner CX22 or a DigitalOcean droplet. Log in with an SSH key and allow only
+SSH inbound. The database is never exposed outside the server.
+
+**2. Install Docker and get the code.**
+
+```bash
+curl -fsSL https://get.docker.com | sh
+git clone https://github.com/multi-kontik/ai-news-aggregator.git
+cd ai-news-aggregator
 ```
 
-On Render, create a Cron Job with the schedule `0 7 * * *` (Render uses UTC),
-the build command `pip install uv && uv sync --frozen`, and the start command `uv run ai-news run`.
-Set `DATABASE_URL` to the Render Postgres internal URL, and add the same
-variables as in `.env`. Tables are created automatically on the first run.
+For a private repo, add a read-only deploy key to the GitHub repo and clone over SSH.
+
+**3. Create `.env`** from `.env.example`. Fill in the OpenAI and Resend keys,
+`EMAIL_TO`, and a strong `POSTGRES_PASSWORD`, for example from
+`openssl rand -hex 24`. For YouTube videos, also set `YOUTUBE_API_KEY` and the
+Webshare proxy username and password. The API key lists new uploads, and the
+proxy is needed for transcripts because YouTube blocks most server IPs.
+
+**4. Start it.**
+
+```bash
+docker compose -f docker/docker-compose.server.yml --env-file .env up -d --build
+```
+
+**5. Check it with a dry run,** then one real run if you want an email straight away:
+
+```bash
+docker compose -f docker/docker-compose.server.yml --env-file .env run --rm app python main.py --dry-run
+docker compose -f docker/docker-compose.server.yml --env-file .env run --rm app python main.py
+```
+
+**Logs** for the scheduled runs:
+
+```bash
+docker compose -f docker/docker-compose.server.yml --env-file .env logs -f app
+```
+
+**Updating** after you push changes:
+
+```bash
+git pull
+docker compose -f docker/docker-compose.server.yml --env-file .env up -d --build
+```
+
+Tables are created and upgraded automatically on every run. The database lives
+in a Docker volume, so it survives restarts, rebuilds and server reboots. If the
+server is down at 7:00, that run is skipped, and the next run picks up anything
+published in the previous 48 hours.

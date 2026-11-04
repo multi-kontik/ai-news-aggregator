@@ -35,6 +35,15 @@ def parse_feed(feed_url: str) -> list[Any]:
     status = getattr(feed, "status", None)
     if status is not None and status != 200:
         raise RuntimeError(f"Fetching feed {feed_url!r} failed with HTTP {status}")
+    return _entries(feed, feed_url)
+
+
+def parse_feed_content(content: bytes, feed_url: str) -> list[Any]:
+    """Parse feed XML that was already downloaded (e.g. through a proxy). `feed_url` is only used in errors."""
+    return _entries(feedparser.parse(content), feed_url)
+
+
+def _entries(feed: Any, feed_url: str) -> list[Any]:
     if getattr(feed, "bozo", False) and not feed.entries:
         raise RuntimeError(f"Feed {feed_url!r} could not be parsed: {feed.bozo_exception}")
     return list(feed.entries)
