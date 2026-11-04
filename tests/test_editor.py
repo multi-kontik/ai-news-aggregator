@@ -25,7 +25,7 @@ def _candidate(id: int, hour: int = 0, title: str | None = None) -> DigestCandid
         summary=f"Summary of story {id}.",
         url=f"https://example.com/{id}",
         source="OpenAI",
-        created_at=datetime(2026, 1, 1, hour, tzinfo=timezone.utc),
+        published_at=datetime(2026, 1, 1, hour, tzinfo=timezone.utc),
     )
 
 
@@ -69,7 +69,7 @@ def test_rank_orders_by_score_highest_first_and_numbers_ranks(agent):
     assert ranked[0].title == "Story 2"
 
 
-def test_rank_breaks_ties_by_newest_digest_first(agent):
+def test_rank_breaks_ties_by_most_recently_published_first(agent):
     _respond_with(agent, _score(1, 7), _score(2, 7))
 
     ranked = agent.rank(digests=[_candidate(1, hour=1), _candidate(2, hour=5)], profile=PROFILE)

@@ -215,6 +215,7 @@ def test_digest_repository_creates_a_digest_linked_to_a_youtube_video(session):
         url=video.url,
         title="Digest title",
         summary="Digest summary.",
+        published_at=video.published_at,
     )
     session.flush()
 
@@ -237,7 +238,7 @@ def test_digest_repository_list_youtube_videos_without_digest(session):
         published_at=datetime(2026, 1, 1, tzinfo=timezone.utc), description=None, transcript=None,
     )
     session.flush()
-    digests.create(youtube_video_id=digested.id, url=digested.url, title="t", summary="s")
+    digests.create(youtube_video_id=digested.id, url=digested.url, title="t", summary="s", published_at=digested.published_at)
 
     pending = digests.list_youtube_videos_without_digest()
 
@@ -257,7 +258,7 @@ def test_digest_repository_list_openai_articles_without_digest(session):
         published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     session.flush()
-    digests.create(openai_article_id=digested.id, url=digested.url, title="t", summary="s")
+    digests.create(openai_article_id=digested.id, url=digested.url, title="t", summary="s", published_at=digested.published_at)
 
     pending = digests.list_openai_articles_without_digest()
 
@@ -277,7 +278,7 @@ def test_digest_repository_list_anthropic_articles_without_digest(session):
         published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     session.flush()
-    digests.create(anthropic_article_id=digested.id, url=digested.url, title="t", summary="s")
+    digests.create(anthropic_article_id=digested.id, url=digested.url, title="t", summary="s", published_at=digested.published_at)
 
     pending = digests.list_anthropic_articles_without_digest()
 
@@ -285,7 +286,7 @@ def test_digest_repository_list_anthropic_articles_without_digest(session):
 
 
 def _digest(session, url: str) -> int:
-    digest = DigestRepository(session).create(url=url, title="t", summary="s")
+    digest = DigestRepository(session).create(url=url, title="t", summary="s", published_at=datetime(2026, 1, 1))
     session.flush()
     return digest.id
 
@@ -312,3 +313,27 @@ def test_mark_sent_skips_digests_already_marked(session):
     from app.database.models import SentDigest
 
     assert [(row.digest_id, row.message_id) for row in session.query(SentDigest)] == [(digest_id, "msg_1")]
+
+
+def test_create_tables_upgrades_an_old_digests_table_to_the_source_publish_date(tmp_path):
+    """Databases created before digests.published_at existed have digests.created_at instead."""
+    from sqlalchemy import text
+
+    from app.database.session import create_tables
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE openai_articles (id INTEGER PRIMARY KEY, url VARCHAR UNIQUE, title VARCHAR, "
+                                "summary VARCHAR, category VARCHAR, content VARCHAR, published_at DATETIME, created_at DATETIME)"))
+        connection.execute(text("CREATE TABLE digests (id INTEGER PRIMARY KEY, youtube_video_id INTEGER, openai_article_id INTEGER, "
+                                "anthropic_article_id INTEGER, url VARCHAR, title VARCHAR, summary VARCHAR, created_at DATETIME)"))
+        connection.execute(text("INSERT INTO openai_articles (id, url, title, published_at, created_at) "
+                                "VALUES (1, 'u', 't', '2026-01-01 09:00:00', '2026-11-04 00:00:00')"))
+        connection.execute(text("INSERT INTO digests (id, openai_article_id, url, title, summary, created_at) "
+                                "VALUES (1, 1, 'u', 't', 's', '2026-11-04 00:00:00')"))
+
+    create_tables(engine)
+    create_tables(engine)  # a second run is a no-op
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT published_at FROM digests")).scalar_one() == "2026-01-01 09:00:00"

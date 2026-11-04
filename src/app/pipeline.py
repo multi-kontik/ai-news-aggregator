@@ -33,9 +33,11 @@ logger = logging.getLogger(__name__)
 # deduplicated, so the overlap is free, and it catches posts that appear in a
 # feed hours after their publish date (or a day the run didn't happen).
 DEFAULT_INGEST_HOURS = 48
-# Stories become eligible for the email when their digest is created, and are
-# never sent twice, so a 24h window covers one daily run.
-DEFAULT_DIGEST_HOURS = 24
+# Stories are picked for the email by their publish date. The window matches
+# ingestion so a post that reached its feed late (or on a day the run didn't
+# happen) still makes it in; already-emailed stories are excluded, so the
+# overlap never causes a repeat.
+DEFAULT_DIGEST_HOURS = 48
 
 
 class PipelineResult(BaseModel):
