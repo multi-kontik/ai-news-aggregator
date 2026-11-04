@@ -6,7 +6,7 @@ from typing import Generic, TypeVar
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.database.models import AnthropicArticle, Digest, OpenAIArticle, YouTubeVideo
+from app.database.models import AnthropicArticle, Digest, OpenAIArticle, SentDigest, YouTubeVideo
 
 ModelT = TypeVar("ModelT")
 
@@ -118,6 +118,25 @@ class DigestRepository:
         if since is not None:
             stmt = stmt.where(Digest.created_at >= since)
         return list(self.session.scalars(stmt))
+
+    def list_unsent(self, since: datetime | None = None) -> list[Digest]:
+        """Digests that haven't gone out in an email yet, newest first, optionally only those created since `since`."""
+        stmt = (
+            select(Digest)
+            .outerjoin(SentDigest, SentDigest.digest_id == Digest.id)
+            .where(SentDigest.id.is_(None))
+            .order_by(Digest.created_at.desc())
+        )
+        if since is not None:
+            stmt = stmt.where(Digest.created_at >= since)
+        return list(self.session.scalars(stmt))
+
+    def mark_sent(self, digest_ids: list[int], message_id: str | None) -> None:
+        """Record that these digests went out in the email with `message_id`. Already-sent ids are skipped."""
+        already_sent = set(self.session.scalars(select(SentDigest.digest_id).where(SentDigest.digest_id.in_(digest_ids))))
+        for digest_id in dict.fromkeys(digest_ids):
+            if digest_id not in already_sent:
+                self.session.add(SentDigest(digest_id=digest_id, message_id=message_id))
 
     def list_youtube_videos_without_digest(self) -> list[YouTubeVideo]:
         stmt = (

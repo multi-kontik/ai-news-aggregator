@@ -282,3 +282,33 @@ def test_digest_repository_list_anthropic_articles_without_digest(session):
     pending = digests.list_anthropic_articles_without_digest()
 
     assert [article.url for article in pending] == ["https://www.anthropic.com/news/no-digest"]
+
+
+def _digest(session, url: str) -> int:
+    digest = DigestRepository(session).create(url=url, title="t", summary="s")
+    session.flush()
+    return digest.id
+
+
+def test_list_unsent_excludes_digests_that_were_emailed(session):
+    digests = DigestRepository(session)
+    sent_id, unsent_id = _digest(session, "https://example.com/sent"), _digest(session, "https://example.com/unsent")
+
+    digests.mark_sent([sent_id], message_id="msg_1")
+    session.flush()
+
+    assert [d.id for d in digests.list_unsent()] == [unsent_id]
+
+
+def test_mark_sent_skips_digests_already_marked(session):
+    digests = DigestRepository(session)
+    digest_id = _digest(session, "https://example.com/a")
+
+    digests.mark_sent([digest_id, digest_id], message_id="msg_1")
+    session.flush()
+    digests.mark_sent([digest_id], message_id="msg_2")
+    session.flush()
+
+    from app.database.models import SentDigest
+
+    assert [(row.digest_id, row.message_id) for row in session.query(SentDigest)] == [(digest_id, "msg_1")]

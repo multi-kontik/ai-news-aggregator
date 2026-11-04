@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     webshare_proxy_username: str | None = None
     webshare_proxy_password: str | None = None
     openai_api_key: str | None = None
+    openai_model: str = "gpt-4.1-mini"
     resend_api_key: str | None = None
     # Resend's shared test sender works without a verified domain, but can only
     # deliver to the email address that owns the Resend account.

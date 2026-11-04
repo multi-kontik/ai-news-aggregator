@@ -21,15 +21,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from app.config import settings
+from app.agent.base import StructuredAgent
 from app.profile import UserProfile
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "gpt-4.1-mini"
 _INSTRUCTIONS = (
     "You are the editor of a personalized daily AI news digest. Your job is to decide "
     "how relevant each of today's stories is to one specific reader, whose profile is "
@@ -96,26 +94,20 @@ class RankedDigest(BaseModel):
 _UNSCORED_REASONING = "Not scored by the model, so ranked last."
 
 
-class EditorAgent:
+class EditorAgent(StructuredAgent):
     """Ranks digests by relevance to a user profile via OpenAI's Responses API."""
-
-    def __init__(self) -> None:
-        self._client = OpenAI(api_key=settings.openai_api_key)
 
     def rank(self, *, digests: list[DigestCandidate], profile: UserProfile) -> list[RankedDigest]:
         if not digests:
             return []
 
-        response = self._client.responses.parse(
-            model=_MODEL,
+        output = self._parse(
             instructions=_INSTRUCTIONS,
             input=_build_input(digests, profile),
             text_format=EditorScores,
+            what="set of editor scores",
         )
-        if response.output_parsed is None:
-            raise ValueError("Model did not return parsed editor scores")
-
-        return _rank(digests, response.output_parsed.scores)
+        return _rank(digests, output.scores)
 
 
 def _build_input(digests: list[DigestCandidate], profile: UserProfile) -> str:

@@ -67,7 +67,7 @@ class TestFetchLatestVideos:
                 _feed_entry("vid2", "Second video", (2026, 1, 2, 12, 0, 0), summary="desc two"),
             ]
         )
-        mocker.patch("app.ingestion.youtube.feedparser.parse", return_value=feed)
+        mocker.patch("app.ingestion.feeds.feedparser.parse", return_value=feed)
 
         videos = client.fetch_latest_videos(CHANNEL_ID)
 
@@ -97,7 +97,7 @@ class TestFetchLatestVideos:
             bozo=True,
             bozo_exception=Exception("not well-formed"),
         )
-        mocker.patch("app.ingestion.youtube.feedparser.parse", return_value=feed)
+        mocker.patch("app.ingestion.feeds.feedparser.parse", return_value=feed)
 
         with pytest.raises(RuntimeError, match="404"):
             client.fetch_latest_videos(CHANNEL_ID)
@@ -109,7 +109,7 @@ class TestFetchLatestVideos:
                 _feed_entry("new", "New video", (2026, 1, 3, 12, 0, 0)),
             ]
         )
-        mocker.patch("app.ingestion.youtube.feedparser.parse", return_value=feed)
+        mocker.patch("app.ingestion.feeds.feedparser.parse", return_value=feed)
 
         videos = client.fetch_latest_videos(
             CHANNEL_ID, since=datetime(2026, 1, 2, tzinfo=timezone.utc)
