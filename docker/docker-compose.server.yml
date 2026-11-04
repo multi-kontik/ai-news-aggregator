@@ -1,0 +1,48 @@
+# The server deployment: Postgres plus the app, which runs the pipeline daily
+# at 7:00 Toronto time (see docker/crontab).
+#
+# Run everything from the repo root, passing the root .env:
+#   docker compose -f docker/docker-compose.server.yml --env-file .env up -d --build
+#
+# docker/docker-compose.yml stays the local development database.
+
+name: ai-news
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ai_news_aggregator
+    # No published port: only the app container can reach the database.
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d ai_news_aggregator"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      # Overrides the localhost URL in .env with the db service on the compose network.
+      DATABASE_URL: postgresql+psycopg://app:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/ai_news_aggregator
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *logging
+
+volumes:
+  db_data:

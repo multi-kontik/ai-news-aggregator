@@ -18,6 +18,10 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "resend>=2.35.0",
     "sqlalchemy>=2.0.51",
+    # Required by docling. Listed directly so the CPU-only source below applies,
+    # and pinned so macOS and the Linux server run the same version.
+    "torch==2.13.0",
+    "torchvision==0.28.0",
     "typer>=0.12.5,<0.27.0",
     "youtube-transcript-api>=1.2.4",
 ]
@@ -38,3 +42,15 @@ dev = [
     "pytest-mock>=3.15.1",
     "respx>=0.23.1",
 ]
+
+# docling needs PyTorch. On Linux (the server image), take the CPU-only build:
+# PyPI's default Linux wheel bundles CUDA and several GB of NVIDIA libraries
+# that a CPU-only server never uses. macOS keeps the regular PyPI wheels.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
