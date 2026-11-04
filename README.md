@@ -34,60 +34,39 @@ recorded once it has been emailed, so it never goes out twice. The command exits
 non-zero if a whole stage fails, so a scheduler can flag the run. Single items
 that fail, such as one feed or one summary, are logged and retried next run.
 
-## Deploying to a server
+## Deploying to Render
 
-The server runs two containers with Docker Compose: Postgres, and the app. The
-app container runs `main.py` every day at 7:00 Toronto time, following daylight
-saving, and stays idle in between. The schedule is in `docker/crontab`, and the
-image is built from `docker/Dockerfile`.
+`render.yaml` sets up two things on Render: a cron job that builds
+`docker/Dockerfile` and runs `main.py` once a day, and a Postgres database for
+it. The cron job runs at 12:00 UTC, which is 7:00 in Toronto in winter and 8:00
+in summer, since Render schedules are UTC only. Change `schedule` in
+`render.yaml` to move it.
 
-**1. Create a server.** Any Ubuntu 24.04 VPS with 4 GB of RAM works, such as a
-Hetzner CX22 or a DigitalOcean droplet. Log in with an SSH key and allow only
-SSH inbound. The database is never exposed outside the server.
+**Cost:** about $7 a month. The database is the smallest paid plan at $6, and
+the cron job is billed by the minute with a $1 monthly minimum. The free
+database plan isn't used, because Render deletes free databases after 30 days.
 
-**2. Install Docker and get the code.**
+**1. Push the code to GitHub.** Render deploys from the repo's main branch.
 
-```bash
-curl -fsSL https://get.docker.com | sh
-git clone https://github.com/multi-kontik/ai-news-aggregator.git
-cd ai-news-aggregator
-```
+**2. Create the Blueprint.** In the Render dashboard, choose **New**, then
+**Blueprint**, connect your GitHub account, and pick this repo. Render reads
+`render.yaml` and shows the cron job and database it will create.
 
-For a private repo, add a read-only deploy key to the GitHub repo and clone over SSH.
+**3. Fill in the secrets** when Render asks for them: `OPENAI_API_KEY`,
+`RESEND_API_KEY`, `EMAIL_TO`, `YOUTUBE_API_KEY`, `WEBSHARE_PROXY_USERNAME` and
+`WEBSHARE_PROXY_PASSWORD`. `DATABASE_URL` is filled in from the database
+automatically. To send from your own domain, add `EMAIL_FROM` later under the
+cron job's **Environment** tab.
 
-**3. Create `.env`** from `.env.example`. Fill in the OpenAI and Resend keys,
-`EMAIL_TO`, and a strong `POSTGRES_PASSWORD`, for example from
-`openssl rand -hex 24`. For YouTube videos, also set `YOUTUBE_API_KEY` and the
-Webshare proxy username and password. The API key lists new uploads, and the
-proxy is needed for transcripts because YouTube blocks most server IPs.
+**4. Apply it.** Render creates the database, builds the image, and schedules
+the job. Tables are created automatically on the first run.
 
-**4. Start it.**
+**5. Test it.** On the cron job's page, click **Trigger Run** to run it now,
+and watch the **Logs** tab. Each run's logs stay there afterwards.
 
-```bash
-docker compose -f docker/docker-compose.server.yml --env-file .env up -d --build
-```
+**Updating:** push to main. Render rebuilds the image automatically, and the
+next run uses the new code.
 
-**5. Check it with a dry run,** then one real run if you want an email straight away:
-
-```bash
-docker compose -f docker/docker-compose.server.yml --env-file .env run --rm app python main.py --dry-run
-docker compose -f docker/docker-compose.server.yml --env-file .env run --rm app python main.py
-```
-
-**Logs** for the scheduled runs:
-
-```bash
-docker compose -f docker/docker-compose.server.yml --env-file .env logs -f app
-```
-
-**Updating** after you push changes:
-
-```bash
-git pull
-docker compose -f docker/docker-compose.server.yml --env-file .env up -d --build
-```
-
-Tables are created and upgraded automatically on every run. The database lives
-in a Docker volume, so it survives restarts, rebuilds and server reboots. If the
-server is down at 7:00, that run is skipped, and the next run picks up anything
-published in the previous 48 hours.
+The database lives on Render, so it survives every deploy. If a run fails or is
+skipped, the next one picks up anything published in the previous 48 hours, and
+nothing that was already emailed is sent again.

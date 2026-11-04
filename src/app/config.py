@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 YOUTUBE_CHANNELS = [
@@ -25,6 +26,19 @@ class Settings(BaseSettings):
     # deliver to the email address that owns the Resend account.
     email_from: str = "AI News Digest <onboarding@resend.dev>"
     email_to: str | None = None
+
+    @field_validator("database_url")
+    @classmethod
+    def _use_the_psycopg_driver(cls, url: str) -> str:
+        """Point plain Postgres URLs at psycopg 3, the driver this app installs.
+
+        Hosts like Render hand out `postgresql://...` (or `postgres://...`),
+        which SQLAlchemy would read as a request for psycopg2.
+        """
+        for prefix in ("postgresql://", "postgres://"):
+            if url.startswith(prefix):
+                return "postgresql+psycopg://" + url[len(prefix):]
+        return url
 
 
 settings = Settings()

@@ -1,4 +1,0 @@
-# Run the daily pipeline at 7:00. The container's TZ is America/Toronto, so
-# this follows Eastern time and daylight saving. Output goes to the container
-# logs: docker compose -f docker/docker-compose.server.yml logs app
-0 7 * * * python /app/main.py
