@@ -75,3 +75,18 @@ class Digest(Base):
         if self.anthropic_article_id is not None:
             return "Anthropic"
         return "Unknown"
+
+
+class SentDigest(Base):
+    """Records that a digest went out in an email, so it's never sent twice.
+
+    A separate table rather than a column on `digests`, so it can be added to
+    an existing database by `create_all` without a migration.
+    """
+
+    __tablename__ = "sent_digests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    digest_id: Mapped[int] = mapped_column(ForeignKey("digests.id"), unique=True)
+    message_id: Mapped[str | None] = mapped_column(doc="The email provider's id for the email it went out in.")
+    sent_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))

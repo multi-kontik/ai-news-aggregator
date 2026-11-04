@@ -1,23 +1,20 @@
-"""Manual smoke test for the YouTube ingestion surface (no DB involved yet).
+"""Manual smoke test for the YouTube client: resolve channels, list recent videos, fetch transcripts. Doesn't touch the DB.
 
 Run with: uv run python scripts/try_youtube.py
 """
 
 from datetime import datetime, timedelta, timezone
 
+from app.config import YOUTUBE_CHANNELS
 from app.ingestion.youtube import YouTubeClient
 
-CHANNELS = [
-    "@anthropic-ai",
-    "@OpenAI",
-]
 WINDOW_HOURS = 24 * 60  # widened for testing since real channels don't post daily
 
 if __name__ == "__main__":
     since = datetime.now(timezone.utc) - timedelta(hours=WINDOW_HOURS)
 
     with YouTubeClient() as client:
-        for channel in CHANNELS:
+        for channel in YOUTUBE_CHANNELS:
             channel_id = client.resolve_channel_id(channel)
             print(f"\n{channel} -> {channel_id}")
 

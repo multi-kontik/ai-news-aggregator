@@ -545,3 +545,57 @@ def test_run_email_digest_does_nothing_without_stories(mocker):
     assert result.email is None
     email_agent.assert_not_called()
     send.assert_not_called()
+
+
+def test_run_ranking_skips_digests_that_were_already_emailed(mocker, test_session_local):
+    now = datetime.now(timezone.utc)
+    with test_session_local() as session:
+        for title in ("sent", "unsent"):
+            _digest_row(session, created_at=now - timedelta(hours=1), title=title)
+        session.flush()
+        sent = next(d for d in DigestRepository(session).list() if d.title == "sent")
+        DigestRepository(session).mark_sent([sent.id], message_id="msg_old")
+        session.commit()
+
+    agent = mocker.MagicMock()
+    agent.rank.return_value = []
+    mocker.patch("app.runner.EditorAgent", return_value=agent)
+
+    run_ranking(hours=24)
+
+    assert [d.title for d in agent.rank.call_args.kwargs["digests"]] == ["unsent"]
+
+
+def test_run_email_digest_records_the_sent_stories_but_not_on_a_dry_run(mocker, test_session_local):
+    with test_session_local() as session:
+        for title in ("one", "two"):
+            _digest_row(session, created_at=datetime.now(timezone.utc), title=title)
+        session.commit()
+        ids = sorted(d.id for d in DigestRepository(session).list())
+
+    agent = mocker.MagicMock()
+    agent.write_introduction.return_value = EmailIntroduction(introduction="intro")
+    mocker.patch("app.runner.EmailAgent", return_value=agent)
+    mocker.patch("app.runner.send_email", return_value="msg_1")
+    ranked = [_ranked(1).model_copy(update={"digest_id": ids[0]}), _ranked(2).model_copy(update={"digest_id": ids[1]})]
+
+    run_email_digest(ranked, send=False)
+    with test_session_local() as session:
+        assert len(DigestRepository(session).list_unsent()) == 2
+
+    run_email_digest(ranked, top_n=1)
+    with test_session_local() as session:
+        assert [d.id for d in DigestRepository(session).list_unsent()] == [ids[1]]
+
+
+def test_run_ingestion_counts_only_new_rows(mocker):
+    client = mocker.MagicMock()
+    client.resolve_channel_id.return_value = "UC" + "x" * 22
+    client.fetch_latest_videos.return_value = [_video("vid1")]
+    mocker.patch("app.runner.YOUTUBE_CHANNELS", ["@channel"])
+    mocker.patch("app.runner.YouTubeClient", return_value=mocker.MagicMock(__enter__=lambda self: client, __exit__=lambda *a: None))
+    mocker.patch("app.runner.openai_news.fetch_latest_articles", return_value=[_article("post")])
+    mocker.patch("app.runner.anthropic_news.fetch_latest_articles", return_value=[])
+
+    assert run_ingestion().new_rows == 2
+    assert run_ingestion().new_rows == 0

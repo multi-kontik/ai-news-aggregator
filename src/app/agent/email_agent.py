@@ -9,14 +9,12 @@ from __future__ import annotations
 
 from datetime import date
 
-from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from app.agent.base import StructuredAgent
 from app.agent.editor import RankedDigest
-from app.config import settings
 from app.profile import UserProfile
 
-_MODEL = "gpt-4.1-mini"
 _INSTRUCTIONS = (
     "You write the opening of a personalized daily AI news email. The reader has "
     "already been greeted by name; you write the short overview that comes right "
@@ -48,11 +46,8 @@ def format_day(day: date) -> str:
     return f"{day:%B} {day.day}, {day.year}"
 
 
-class EmailAgent:
+class EmailAgent(StructuredAgent):
     """Writes the email introduction for the day's top stories via OpenAI's Responses API."""
-
-    def __init__(self) -> None:
-        self._client = OpenAI(api_key=settings.openai_api_key)
 
     def write_introduction(self, *, stories: list[RankedDigest], profile: UserProfile) -> EmailIntroduction:
         if not stories:
@@ -65,12 +60,9 @@ class EmailAgent:
             f"Today's top {len(stories)} stories, most relevant first:\n\n{story_list}\n\n---\n\n"
             f"Reader profile:\n\n{profile.to_prompt()}"
         )
-        response = self._client.responses.parse(
-            model=_MODEL,
+        return self._parse(
             instructions=_INSTRUCTIONS,
             input=input_text,
             text_format=EmailIntroduction,
+            what="email introduction",
         )
-        if response.output_parsed is None:
-            raise ValueError("Model did not return a parsed email introduction")
-        return response.output_parsed

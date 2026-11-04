@@ -6,3 +6,43 @@ https://www.anthropic.com/engineering
 
 https://www.anthropic.com/research
 
+## Running it
+
+Everything runs through one command, `ai-news`. Copy `.env.example` to `.env`
+and fill in `OPENAI_API_KEY`, `RESEND_API_KEY` and `EMAIL_TO`, then start the
+database:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+The daily pipeline is a single command. It fetches new videos and articles,
+stores them, fills in transcripts and article content, summarizes everything
+new, ranks the unsent stories against your profile in `src/app/profile.py`, and
+emails you the top 10:
+
+```bash
+uv run ai-news run              # the full daily run
+uv run ai-news run --dry-run --preview digest.html   # build the email without sending it
+```
+
+Each stage can also be run on its own: `ingest`, `enrich`, `digest`, `rank`,
+`send` and `init-db`. Run `uv run ai-news --help` for the options.
+
+Every stage is safe to re-run. Stored items are deduplicated, and a story is
+recorded once it has been emailed, so it never goes out twice. The command exits
+non-zero if a whole stage fails, so a scheduler can flag the run. Single items
+that fail, such as one feed or one summary, are logged and retried next run.
+
+## Scheduling it daily
+
+Run `ai-news run` once a day from the project folder. With cron, for 7am every day:
+
+```cron
+0 7 * * * cd /path/to/ai-news-aggregator && /path/to/uv run ai-news run >> pipeline.log 2>&1
+```
+
+On Render, create a Cron Job with the schedule `0 7 * * *` (Render uses UTC),
+the build command `pip install uv && uv sync --frozen`, and the start command `uv run ai-news run`.
+Set `DATABASE_URL` to the Render Postgres internal URL, and add the same
+variables as in `.env`. Tables are created automatically on the first run.

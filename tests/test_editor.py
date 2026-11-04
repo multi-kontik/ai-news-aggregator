@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.agent.editor import _MODEL, DigestCandidate, DigestScore, EditorAgent, EditorScores
+from app.agent.editor import DigestCandidate, DigestScore, EditorAgent, EditorScores
+from app.config import settings
 from app.profile import UserProfile
 
 PROFILE = UserProfile(
@@ -34,7 +35,7 @@ def _score(digest_id: int, score: int) -> DigestScore:
 
 @pytest.fixture
 def agent(mocker):
-    mocker.patch("app.agent.editor.OpenAI")
+    mocker.patch("app.agent.base.OpenAI")
     return EditorAgent()
 
 
@@ -49,7 +50,7 @@ def test_rank_calls_the_responses_api_with_stories_and_profile(agent):
 
     agent._client.responses.parse.assert_called_once()
     call_kwargs = agent._client.responses.parse.call_args.kwargs
-    assert call_kwargs["model"] == _MODEL
+    assert call_kwargs["model"] == settings.openai_model
     assert call_kwargs["text_format"] is EditorScores
     assert "digest_id=1" in call_kwargs["input"]
     assert "Agents get better at tools" in call_kwargs["input"]

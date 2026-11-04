@@ -1,7 +1,7 @@
 [project]
 name = "ai-news-aggregator"
 version = "0.1.0"
-description = "Add your description here"
+description = "Aggregates AI news from YouTube, OpenAI and Anthropic into a ranked daily email digest"
 readme = "README.md"
 authors = [
     { name = "multi-kontik", email = "bayaraa.battsengel@mail.utoronto.ca" }
@@ -18,10 +18,12 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "resend>=2.35.0",
     "sqlalchemy>=2.0.51",
-    "trafilatura>=2.2.0",
     "typer>=0.12.5,<0.27.0",
     "youtube-transcript-api>=1.2.4",
 ]
+
+[project.scripts]
+ai-news = "app.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]

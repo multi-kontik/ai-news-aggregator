@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from openai import OpenAI
 from pydantic import BaseModel
 
-from app.config import settings
+from app.agent.base import StructuredAgent
 
-_MODEL = "gpt-4.1-mini"
 _INSTRUCTIONS = (
     "You are a summarization assistant for an AI news digest read by a technical "
     "audience following AI industry developments.\n\n"
@@ -21,20 +19,14 @@ class DigestSummary(BaseModel):
     summary: str
 
 
-class SummarizerAgent:
+class SummarizerAgent(StructuredAgent):
     """Generates a short digest title/summary for a piece of content via OpenAI's Responses API."""
-
-    def __init__(self) -> None:
-        self._client = OpenAI(api_key=settings.openai_api_key)
 
     def summarize(self, *, title: str, url: str, source: str, content: str) -> DigestSummary:
         input_text = f"Source: {source}\nTitle: {title}\nURL: {url}\n\nContent:\n{content}"
-        response = self._client.responses.parse(
-            model=_MODEL,
+        return self._parse(
             instructions=_INSTRUCTIONS,
             input=input_text,
             text_format=DigestSummary,
+            what=f"digest summary for {url!r}",
         )
-        if response.output_parsed is None:
-            raise ValueError(f"Model did not return a parsed digest summary for {url!r}")
-        return response.output_parsed

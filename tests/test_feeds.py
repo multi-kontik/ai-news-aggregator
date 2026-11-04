@@ -101,9 +101,27 @@ def test_tolerates_a_bozo_feed_that_still_has_entries(mocker):
 
 def test_fetch_article_markdown_exports_the_converted_document(mocker):
     result = types.SimpleNamespace(document=types.SimpleNamespace(export_to_markdown=lambda: "# Title\n\nBody"))
-    mock_convert = mocker.patch("app.ingestion.feeds._converter.convert", return_value=result)
+    converter = mocker.MagicMock()
+    converter.convert.return_value = result
+    mocker.patch("app.ingestion.feeds._get_converter", return_value=converter)
 
     markdown = fetch_article_markdown("https://example.com/article")
 
-    mock_convert.assert_called_once_with("https://example.com/article")
+    converter.convert.assert_called_once_with("https://example.com/article")
     assert markdown == "# Title\n\nBody"
+
+
+def test_skips_entries_missing_a_publish_date_instead_of_failing_the_feed(mocker):
+    undated = types.SimpleNamespace(title="Undated", link="https://example.com/undated", summary="")
+    feed = types.SimpleNamespace(entries=[undated, _feed_entry("Dated", (2026, 1, 1, 12, 0, 0))])
+    mocker.patch("app.ingestion.feeds.feedparser.parse", return_value=feed)
+
+    assert [article.title for article in fetch_articles(FEED_URL)] == ["Dated"]
+
+
+def test_defaults_a_missing_summary_to_empty(mocker):
+    entry = _feed_entry("No summary", (2026, 1, 1, 12, 0, 0))
+    del entry.summary
+    mocker.patch("app.ingestion.feeds.feedparser.parse", return_value=types.SimpleNamespace(entries=[entry]))
+
+    assert fetch_articles(FEED_URL)[0].summary == ""

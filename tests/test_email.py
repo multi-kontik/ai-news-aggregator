@@ -6,7 +6,8 @@ from datetime import date
 import pytest
 
 from app.agent.editor import RankedDigest
-from app.agent.email_agent import _MODEL, EmailAgent, EmailIntroduction, greeting
+from app.agent.email_agent import EmailAgent, EmailIntroduction, greeting
+from app.config import settings
 from app.email_digest import render_digest_email, send_email
 from app.profile import UserProfile
 
@@ -28,7 +29,7 @@ def _story(rank: int, title: str | None = None, url: str | None = None) -> Ranke
 
 @pytest.fixture
 def agent(mocker):
-    mocker.patch("app.agent.email_agent.OpenAI")
+    mocker.patch("app.agent.base.OpenAI")
     return EmailAgent()
 
 
@@ -44,7 +45,7 @@ def test_write_introduction_calls_the_responses_api_with_stories_and_profile(age
 
     assert result == expected
     call_kwargs = agent._client.responses.parse.call_args.kwargs
-    assert call_kwargs["model"] == _MODEL
+    assert call_kwargs["model"] == settings.openai_model
     assert call_kwargs["text_format"] is EmailIntroduction
     assert "Agents ship" in call_kwargs["input"]
     assert "Builds LLM agents." in call_kwargs["input"]

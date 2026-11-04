@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from types import TracebackType
 
-import feedparser
 import httpx
 from pydantic import BaseModel
 from youtube_transcript_api import (
@@ -16,6 +15,7 @@ from youtube_transcript_api import (
 from youtube_transcript_api.proxies import WebshareProxyConfig
 
 from app.config import settings
+from app.ingestion.feeds import entry_published_at, parse_feed
 
 FEED_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 _CHANNEL_ID_PATTERN = re.compile(r"^UC[\w-]{22}$")
@@ -94,18 +94,10 @@ class YouTubeClient:
         The feed only ever contains the channel's most recent ~15 uploads, which
         is fine for a daily sync but means it can't be used to fetch full history.
         """
-        feed = feedparser.parse(FEED_URL.format(channel_id=channel_id))
-
-        status = getattr(feed, "status", None)
-        if status is not None and status != 200:
-            raise RuntimeError(f"Fetching feed for channel {channel_id!r} failed with HTTP {status}")
-        if getattr(feed, "bozo", False):
-            raise RuntimeError(f"Feed for channel {channel_id!r} could not be parsed: {feed.bozo_exception}")
-
         videos = []
-        for entry in feed.entries:
-            published_at = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-            if since is not None and published_at < since:
+        for entry in parse_feed(FEED_URL.format(channel_id=channel_id)):
+            published_at = entry_published_at(entry)
+            if published_at is None or (since is not None and published_at < since):
                 continue
             videos.append(
                 ChannelVideo(
@@ -114,7 +106,7 @@ class YouTubeClient:
                     title=entry.title,
                     url=entry.link,
                     published_at=published_at,
-                    description=entry.summary,
+                    description=getattr(entry, "summary", None) or "",
                 )
             )
         return videos

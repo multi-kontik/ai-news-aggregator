@@ -4,12 +4,13 @@ import types
 
 import pytest
 
-from app.agent.summarizer import _MODEL, DigestSummary, SummarizerAgent
+from app.agent.summarizer import DigestSummary, SummarizerAgent
+from app.config import settings
 
 
 @pytest.fixture
 def agent(mocker):
-    mocker.patch("app.agent.summarizer.OpenAI")
+    mocker.patch("app.agent.base.OpenAI")
     return SummarizerAgent()
 
 
@@ -22,7 +23,7 @@ def test_summarize_calls_the_responses_api_with_the_expected_arguments(agent):
     assert result == expected
     agent._client.responses.parse.assert_called_once()
     call_kwargs = agent._client.responses.parse.call_args.kwargs
-    assert call_kwargs["model"] == _MODEL
+    assert call_kwargs["model"] == settings.openai_model
     assert call_kwargs["text_format"] is DigestSummary
     assert "Original title" in call_kwargs["input"]
     assert "https://example.com/a" in call_kwargs["input"]
