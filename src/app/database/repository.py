@@ -112,8 +112,12 @@ class DigestRepository:
         self.session.add(digest)
         return digest
 
-    def list(self) -> list[Digest]:
-        return list(self.session.scalars(select(Digest).order_by(Digest.created_at.desc())))
+    def list(self, since: datetime | None = None) -> list[Digest]:
+        """List digests newest first, optionally only those created at or after `since`."""
+        stmt = select(Digest).order_by(Digest.created_at.desc())
+        if since is not None:
+            stmt = stmt.where(Digest.created_at >= since)
+        return list(self.session.scalars(stmt))
 
     def list_youtube_videos_without_digest(self) -> list[YouTubeVideo]:
         stmt = (

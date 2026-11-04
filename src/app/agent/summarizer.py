@@ -3,6 +3,8 @@ from __future__ import annotations
 from openai import OpenAI
 from pydantic import BaseModel
 
+from app.config import settings
+
 _MODEL = "gpt-4.1-mini"
 _INSTRUCTIONS = (
     "You are a summarization assistant for an AI news digest read by a technical "
@@ -23,7 +25,7 @@ class SummarizerAgent:
     """Generates a short digest title/summary for a piece of content via OpenAI's Responses API."""
 
     def __init__(self) -> None:
-        self._client = OpenAI()
+        self._client = OpenAI(api_key=settings.openai_api_key)
 
     def summarize(self, *, title: str, url: str, source: str, content: str) -> DigestSummary:
         input_text = f"Source: {source}\nTitle: {title}\nURL: {url}\n\nContent:\n{content}"

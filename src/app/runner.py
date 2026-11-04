@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from pydantic import BaseModel
 
+from app.agent.editor import DigestCandidate, EditorAgent, RankedDigest
+from app.agent.email_agent import EmailAgent
 from app.agent.summarizer import SummarizerAgent
 from app.config import YOUTUBE_CHANNELS
 from app.database.repository import (
@@ -15,9 +17,11 @@ from app.database.repository import (
     YouTubeVideoRepository,
 )
 from app.database.session import SessionLocal
+from app.email_digest import DigestEmail, render_digest_email, send_email
 from app.ingestion import anthropic_news, openai_news
 from app.ingestion.feeds import Article, fetch_article_markdown
 from app.ingestion.youtube import ChannelVideo, YouTubeClient
+from app.profile import USER_PROFILE, UserProfile
 
 logger = logging.getLogger(__name__)
 
@@ -222,3 +226,80 @@ def process_digest() -> DigestResult:
 
     logger.info("Digest: finished, %d created, %d error(s)", digests_created, len(errors))
     return DigestResult(digests_created=digests_created, errors=errors)
+
+
+class RankingResult(BaseModel):
+    ranked: list[RankedDigest]
+
+
+def run_ranking(hours: int = 24, profile: UserProfile = USER_PROFILE) -> RankingResult:
+    """Rank the digests created in the last `hours` by how relevant they are to `profile`.
+
+    Unlike the earlier stages there's no per-item error isolation: the editor
+    ranks all digests in a single model call, so it either succeeds or raises.
+    Nothing is written to the database.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    with SessionLocal() as session:
+        candidates = [
+            DigestCandidate(
+                id=digest.id,
+                title=digest.title,
+                summary=digest.summary,
+                url=digest.url,
+                source=digest.source,
+                created_at=digest.created_at,
+            )
+            for digest in DigestRepository(session).list(since=since)
+        ]
+
+    logger.info("Ranking: %d digest(s) from the last %d hour(s)", len(candidates), hours)
+    ranked = EditorAgent().rank(digests=candidates, profile=profile)
+    logger.info("Ranking: finished, %d ranked", len(ranked))
+    return RankingResult(ranked=ranked)
+
+
+class EmailDigestResult(BaseModel):
+    email: DigestEmail | None
+    stories: list[RankedDigest]
+    message_id: str | None
+
+
+def run_email_digest(
+    ranked: list[RankedDigest] | None = None,
+    *,
+    top_n: int = 10,
+    hours: int = 24,
+    profile: UserProfile = USER_PROFILE,
+    day: date | None = None,
+    send: bool = True,
+) -> EmailDigestResult:
+    """Build the daily email from the editor's top `top_n` stories, and send it.
+
+    Pass the editor's output as `ranked`; if it's omitted, the last `hours`
+    of digests are ranked first. With `send=False` the email is built but not
+    sent (useful for previewing). If there are no stories, nothing is built or sent.
+    """
+    if ranked is None:
+        ranked = run_ranking(hours=hours, profile=profile).ranked
+
+    stories = sorted(ranked, key=lambda story: story.rank)[:top_n]
+    if not stories:
+        logger.info("Email: no stories to send")
+        return EmailDigestResult(email=None, stories=[], message_id=None)
+
+    logger.info("Email: writing the introduction for the top %d stor(ies)", len(stories))
+    introduction = EmailAgent().write_introduction(stories=stories, profile=profile)
+    email = render_digest_email(
+        name=profile.name,
+        day=day or datetime.now().date(),
+        introduction=introduction.introduction,
+        stories=stories,
+    )
+
+    message_id = None
+    if send:
+        message_id = send_email(email)
+        logger.info("Email: sent %r (Resend id %s)", email.subject, message_id)
+    return EmailDigestResult(email=email, stories=stories, message_id=message_id)

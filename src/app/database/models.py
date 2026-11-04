@@ -64,3 +64,14 @@ class Digest(Base):
     title: Mapped[str]
     summary: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+
+    @property
+    def source(self) -> str:
+        """Which source table this digest was generated from, as a display name."""
+        if self.youtube_video_id is not None:
+            return "YouTube"
+        if self.openai_article_id is not None:
+            return "OpenAI"
+        if self.anthropic_article_id is not None:
+            return "Anthropic"
+        return "Unknown"

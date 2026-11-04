@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.agent.editor import RankedDigest
+from app.agent.email_agent import EmailIntroduction
 from app.agent.summarizer import DigestSummary
 from app.database.models import Base
 from app.database.repository import (
@@ -16,7 +18,8 @@ from app.database.repository import (
 )
 from app.ingestion.feeds import Article
 from app.ingestion.youtube import ChannelVideo
-from app.runner import process_digest, run_enrichment, run_ingestion
+from app.profile import UserProfile
+from app.runner import process_digest, run_enrichment, run_email_digest, run_ingestion, run_ranking
 
 
 @pytest.fixture(autouse=True)
@@ -464,3 +467,81 @@ def test_process_digest_continues_after_a_failed_save(mocker, test_session_local
     assert [e.source for e in result.errors] == ["digest-openai:https://openai.com/index/first"]
     with test_session_local() as session:
         assert [d.url for d in DigestRepository(session).list()] == ["https://openai.com/index/second"]
+
+
+def _digest_row(session, *, created_at: datetime, title: str, **source_fk: int) -> None:
+    digest = DigestRepository(session).create(url=f"https://example.com/{title}", title=title, summary="s", **source_fk)
+    digest.created_at = created_at
+
+
+def test_run_ranking_only_ranks_digests_from_the_last_n_hours(mocker, test_session_local):
+    now = datetime.now(timezone.utc)
+    with test_session_local() as session:
+        video = YouTubeVideoRepository(session).create(
+            channel="c", video_id="vid1", title="Video", url="https://youtube.com/watch?v=vid1",
+            published_at=now, description=None, transcript=None,
+        )
+        article = OpenAIArticleRepository(session).create(url="https://openai.com/index/a", title="A", published_at=now)
+        session.flush()
+        _digest_row(session, created_at=now - timedelta(hours=1), title="recent", youtube_video_id=video.id)
+        _digest_row(session, created_at=now - timedelta(hours=30), title="old", openai_article_id=article.id)
+        session.commit()
+
+    agent = mocker.MagicMock()
+    agent.rank.return_value = []
+    mocker.patch("app.runner.EditorAgent", return_value=agent)
+    profile = UserProfile(name="Aaron", background="b", interests=["i"])
+
+    result = run_ranking(hours=24, profile=profile)
+
+    assert result.ranked == []
+    call_kwargs = agent.rank.call_args.kwargs
+    assert call_kwargs["profile"] is profile
+    assert [(d.title, d.source) for d in call_kwargs["digests"]] == [("recent", "YouTube")]
+
+
+def _ranked(rank: int) -> RankedDigest:
+    return RankedDigest(
+        rank=rank, digest_id=rank, title=f"Story {rank}", summary="s", url=f"https://example.com/{rank}",
+        source="OpenAI", relevance_score=5, reasoning="r",
+    )
+
+
+def test_run_email_digest_uses_only_the_top_n_stories_and_sends(mocker):
+    agent = mocker.MagicMock()
+    agent.write_introduction.return_value = EmailIntroduction(introduction="Today's intro.")
+    mocker.patch("app.runner.EmailAgent", return_value=agent)
+    send = mocker.patch("app.runner.send_email", return_value="msg_1")
+    profile = UserProfile(name="Aaron", background="b", interests=["i"])
+
+    result = run_email_digest([_ranked(r) for r in (3, 1, 12, 2, 5, 4, 6, 7, 8, 9, 10, 11)], profile=profile, day=date(2026, 11, 3))
+
+    assert [s.rank for s in result.stories] == list(range(1, 11))
+    assert [s.rank for s in agent.write_introduction.call_args.kwargs["stories"]] == list(range(1, 11))
+    assert result.message_id == "msg_1"
+    assert "Hey Aaron" in result.email.text and "Today's intro." in result.email.text
+    assert "Story 11" not in result.email.text
+    send.assert_called_once_with(result.email)
+
+
+def test_run_email_digest_dry_run_builds_but_does_not_send(mocker):
+    agent = mocker.MagicMock()
+    agent.write_introduction.return_value = EmailIntroduction(introduction="intro")
+    mocker.patch("app.runner.EmailAgent", return_value=agent)
+    send = mocker.patch("app.runner.send_email")
+
+    result = run_email_digest([_ranked(1)], send=False)
+
+    assert result.email is not None and result.message_id is None
+    send.assert_not_called()
+
+
+def test_run_email_digest_does_nothing_without_stories(mocker):
+    email_agent = mocker.patch("app.runner.EmailAgent")
+    send = mocker.patch("app.runner.send_email")
+
+    result = run_email_digest([])
+
+    assert result.email is None
+    email_agent.assert_not_called()
+    send.assert_not_called()
