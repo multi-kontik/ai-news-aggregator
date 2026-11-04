@@ -1,0 +1,47 @@
+# Render Blueprint: the daily pipeline as a cron job, plus its Postgres database.
+# Create it from the Render dashboard: New -> Blueprint -> pick this repo.
+# Render asks for every `sync: false` value (the secrets) on first creation.
+
+services:
+  - type: cron
+    name: ai-news-daily
+    runtime: docker
+    dockerfilePath: ./docker/Dockerfile
+    dockerContext: .
+    dockerCommand: python main.py
+    # Render schedules are UTC only. 12:00 UTC is 7:00 in Toronto in winter
+    # (EST) and 8:00 in summer (EDT). Use "0 11 * * *" for 7:00 in summer instead.
+    schedule: "0 12 * * *"
+    # 1 CPU / 2 GB. A run peaks around 460 MB and takes about a minute, so the
+    # 512 MB plan would be too tight, and this one still costs pennies a month.
+    plan: 1c-2g
+    region: ohio
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-news-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_TO
+        sync: false
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: WEBSHARE_PROXY_USERNAME
+        sync: false
+      - key: WEBSHARE_PROXY_PASSWORD
+        sync: false
+
+databases:
+  - name: ai-news-db
+    databaseName: ai_news_aggregator
+    user: app
+    # 0.1 CPU / 256 MB with 1 GB of storage, the smallest paid plan. The free
+    # plan isn't used because free databases are deleted after 30 days.
+    plan: 0.1c-256mb
+    postgresMajorVersion: "16"
+    region: ohio
+    # Only reachable from Render services in this account, not the internet.
+    ipAllowList: []
